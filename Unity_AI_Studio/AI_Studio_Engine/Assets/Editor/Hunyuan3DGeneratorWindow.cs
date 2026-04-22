@@ -13,8 +13,13 @@ using AIStudio.Core;
 public class Hunyuan3DGeneratorWindow : EditorWindow
 {
     // --- Configuration ---
-    private const string ApiPath = "/generate/3d";
+    // Hunyuan3D's first-run cold-load (7 GB dit + VAE decode + postprocess +
+    // paintPBR) routinely exceeds Cloudflare's 100 s edge timeout, so we use
+    // the async job system instead of the synchronous /generate/3d endpoint.
+    private const string SubmitPath = "/jobs/submit/3d";
     private string _outputFolder = "Assets/Generated3D";
+    private string _currentJobId;
+    private bool _cancelRequested;
 
     // --- Image slot ---
     private string _imagePath;
@@ -48,7 +53,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
 
         // --- Settings ---
         EditorGUILayout.LabelField("Settings", EditorStyles.boldLabel);
-        EditorGUILayout.LabelField("Endpoint", $"{AIStudioSettings.ActiveMode} · {AIStudioSettings.ActiveBaseUrl}{ApiPath}");
+        EditorGUILayout.LabelField("Endpoint", $"{AIStudioSettings.ActiveMode} · {AIStudioSettings.ActiveBaseUrl}{SubmitPath}");
         _outputFolder = EditorGUILayout.TextField("Output Folder", _outputFolder);
         EditorGUILayout.Space(8);
 
@@ -185,24 +190,59 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         Repaint();
     }
 
-    // --- Generation ---
+    // --- Generation (async job pattern, mirrors VideoGeneratorWindow) ---
     private async void RunGeneration()
     {
         _isGenerating = true;
-        _statusMessage = "Uploading image and generating 3D model...";
+        _cancelRequested = false;
+        _currentJobId = null;
+        _statusMessage = "Submitting 3D generation job...";
         _statusType = MessageType.Info;
-        _progress = 0.1f;
+        _progress = 0.05f;
         Repaint();
 
         try
         {
-            string resultPath = await GenerateAsync();
+            string jobId = await SubmitJobAsync();
+            _currentJobId = jobId;
+            _progress = 0.1f;
+            _statusMessage = $"Job submitted ({jobId.Substring(0, Math.Min(8, jobId.Length))}...). Generating mesh...";
+            Repaint();
 
+            while (!_cancelRequested)
+            {
+                await Task.Delay(5000);
+                if (_cancelRequested) break;
+
+                string status = await CheckJobStatusAsync(jobId);
+                if (status == "complete")
+                {
+                    _progress = 0.9f;
+                    _statusMessage = "Downloading GLB...";
+                    Repaint();
+                    break;
+                }
+                if (status == "error" || status == "cancelled")
+                    throw new Exception($"Job {status}.");
+
+                _progress = Mathf.Min(0.85f, _progress + 0.02f);
+                _statusMessage = $"Generating mesh ({jobId.Substring(0, Math.Min(8, jobId.Length))}...)...";
+                Repaint();
+            }
+
+            if (_cancelRequested)
+            {
+                _statusMessage = "Generation cancelled.";
+                _statusType = MessageType.Warning;
+                return;
+            }
+
+            string resultPath = await DownloadJobResultAsync(jobId);
+            _progress = 1f;
             _statusMessage = $"3D model imported: {resultPath}";
             _statusType = MessageType.Info;
 
             AssetDatabase.Refresh();
-
             var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(resultPath);
             if (asset != null)
             {
@@ -220,54 +260,64 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         {
             _isGenerating = false;
             _progress = 0f;
+            _currentJobId = null;
             Repaint();
         }
     }
 
-    private async Task<string> GenerateAsync()
+    private async Task<string> SubmitJobAsync()
     {
-        // Ensure output folder exists
-        string fullOutputDir = Path.Combine(Application.dataPath,
-            _outputFolder.StartsWith("Assets/") ? _outputFolder.Substring(7) : _outputFolder);
-        Directory.CreateDirectory(fullOutputDir);
-
-        _progress = 0.2f;
-        Repaint();
-
         var form = new MultipartFormDataContent();
-
         byte[] fileBytes = File.ReadAllBytes(_imagePath);
         var fileContent = new ByteArrayContent(fileBytes);
         fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         form.Add(fileContent, "image", Path.GetFileName(_imagePath));
 
-        _progress = 0.3f;
-        Repaint();
-
-        string url = AIStudioSettings.BuildUrl(ApiPath);
-        Debug.Log($"[3D Generator] Sending request to {url}...");
-        using var request = AIStudioClient.CreateRequest(HttpMethod.Post, ApiPath);
+        string url = AIStudioSettings.BuildUrl(SubmitPath);
+        Debug.Log($"[3D Generator] Submitting job to {url}...");
+        using var request = AIStudioClient.CreateRequest(HttpMethod.Post, SubmitPath);
         request.Content = form;
-        using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(10));
+        using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(2));
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
+        string body = await response.Content.ReadAsStringAsync();
+        await AIStudioClient.EnsureSuccessAsync(response, "3D Generator (submit)");
 
-        _progress = 0.8f;
-        Repaint();
+        var result = JsonUtility.FromJson<JobSubmitResponse>(body);
+        if (string.IsNullOrEmpty(result.job_id))
+            throw new Exception($"No job_id in response: {body}");
+        return result.job_id;
+    }
 
-        await AIStudioClient.EnsureSuccessAsync(response, "3D Generator");
+    private async Task<string> CheckJobStatusAsync(string jobId)
+    {
+        string path = $"/jobs/{jobId}/status";
+        using var request = AIStudioClient.CreateRequest(HttpMethod.Get, path);
+        using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromSeconds(30));
+        HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
+        string body = await response.Content.ReadAsStringAsync();
+        var result = JsonUtility.FromJson<JobStatusResponse>(body);
+        return result.status;
+    }
 
-        // Determine output filename from Content-Disposition header or fallback
+    private async Task<string> DownloadJobResultAsync(string jobId)
+    {
+        string fullOutputDir = Path.Combine(Application.dataPath,
+            _outputFolder.StartsWith("Assets/") ? _outputFolder.Substring(7) : _outputFolder);
+        Directory.CreateDirectory(fullOutputDir);
+
+        string path = $"/jobs/{jobId}/result";
+        using var request = AIStudioClient.CreateRequest(HttpMethod.Get, path);
+        using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(5));
+        HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
+        await AIStudioClient.EnsureSuccessAsync(response, "3D Generator (download)");
+
         string outputName = "generated_model.glb";
         if (response.Content.Headers.ContentDisposition?.FileName != null)
-        {
             outputName = response.Content.Headers.ContentDisposition.FileName.Trim('"');
-        }
 
-        // Save the GLB file
         byte[] glbBytes = await response.Content.ReadAsByteArrayAsync();
         string savePath = Path.Combine(fullOutputDir, outputName);
 
-        // Avoid overwriting
         if (File.Exists(savePath))
         {
             string nameNoExt = Path.GetFileNameWithoutExtension(outputName);
@@ -281,12 +331,22 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         }
 
         File.WriteAllBytes(savePath, glbBytes);
-        _progress = 1f;
-        Repaint();
-
         Debug.Log($"[3D Generator] Saved {glbBytes.Length} bytes to {savePath}");
+        return "Assets" + savePath.Substring(Application.dataPath.Length).Replace('\\', '/');
+    }
 
-        string assetsRelative = "Assets" + savePath.Substring(Application.dataPath.Length).Replace('\\', '/');
-        return assetsRelative;
+    [Serializable]
+    private struct JobSubmitResponse
+    {
+        public string job_id;
+        public string status;
+    }
+
+    [Serializable]
+    private struct JobStatusResponse
+    {
+        public string job_id;
+        public string status;
+        public string error;
     }
 }
