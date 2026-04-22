@@ -254,11 +254,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         _progress = 0.8f;
         Repaint();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"API returned {response.StatusCode}: {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "3D Generator");
 
         // Determine output filename from Content-Disposition header or fallback
         string outputName = "generated_model.glb";

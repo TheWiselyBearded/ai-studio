@@ -46,8 +46,9 @@ phase_apt() {
   apt-get update -y
   apt-get install -y \
     git build-essential cmake ninja-build \
-    ffmpeg libgl1 libglib2.0-0 \
+    ffmpeg libgl1 libglib2.0-0 libopengl0 libglu1-mesa libegl1 libxkbcommon0 \
     sox libsox-dev libsox-fmt-all \
+    aria2 \
     curl wget unzip jq \
     python3-dev
 
@@ -373,6 +374,11 @@ EOF
 phase_systemd() {
   echo "--- [Phase 7] systemd units ---"
 
+  # All three ComfyUI services append to their own log files so the Flask
+  # server can tail them for rich error context and expose them via /logs.
+  touch /var/log/comfy-main.log /var/log/comfy-hunyuan.log /var/log/comfy-trellis.log
+  chown "$AISTUDIO_USER:$AISTUDIO_USER" /var/log/comfy-*.log
+
   write_unit /etc/systemd/system/comfy-main.service "[Unit]
 Description=ComfyUI Main (port 8000)
 After=network-online.target
@@ -381,10 +387,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$AISTUDIO_USER
+Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Main
 ExecStart=$MINIFORGE_DIR/envs/comfy_main/bin/python main.py --port 8000 --listen 127.0.0.1 --enable-manager
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:/var/log/comfy-main.log
+StandardError=append:/var/log/comfy-main.log
 
 [Install]
 WantedBy=multi-user.target"
@@ -397,10 +406,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$AISTUDIO_USER
+Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Hunyuan
 ExecStart=$MINIFORGE_DIR/envs/comfy_hunyuan/bin/python main.py --port 8001 --listen 127.0.0.1
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:/var/log/comfy-hunyuan.log
+StandardError=append:/var/log/comfy-hunyuan.log
 
 [Install]
 WantedBy=multi-user.target"
@@ -414,10 +426,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$AISTUDIO_USER
+Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Trellis
 ExecStart=$MINIFORGE_DIR/envs/comfy_trellis/bin/python main.py --port 8002 --listen 127.0.0.1
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:/var/log/comfy-trellis.log
+StandardError=append:/var/log/comfy-trellis.log
 
 [Install]
 WantedBy=multi-user.target"

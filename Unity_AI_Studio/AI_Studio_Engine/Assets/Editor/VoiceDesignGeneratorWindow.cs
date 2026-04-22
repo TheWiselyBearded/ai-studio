@@ -174,11 +174,7 @@ public class VoiceDesignGeneratorWindow : EditorWindow
         _progress = 0.8f;
         Repaint();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"API returned {response.StatusCode}: {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "Voice Design");
 
         // Determine output filename from Content-Disposition header or fallback
         string outputName = "generated_voice.flac";

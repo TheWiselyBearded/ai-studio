@@ -106,6 +106,17 @@ def upload_image(filepath, target=None):
     return result["name"]
 
 
+def _comfy_service_for_addr(addr):
+    """Map a ComfyUI backend address to one of our /logs/<service> keys."""
+    if not addr:
+        return "main"
+    if str(server_address_3d) in addr or ":8001" in str(addr):
+        return "hunyuan"
+    if ":8002" in str(addr):
+        return "trellis"
+    return "main"
+
+
 def run_comfyui_workflow(workflow, target=None):
     """Queue a workflow, wait for completion via websocket, return the history."""
     addr = target or server_address
@@ -137,9 +148,14 @@ def run_comfyui_workflow(workflow, target=None):
                     node_type = data.get("node_type", "?")
                     error_msg = data.get("exception_message", "Unknown error")
                     ws.close()
-                    raise Exception(
+                    # Tag the exception with which ComfyUI instance it came from
+                    # so the /generate/* error handler can include the right
+                    # log tail (comfy-main.log vs comfy-hunyuan.log) in its reply.
+                    exc = Exception(
                         f"ComfyUI execution error in node {node_id} ({node_type}): {error_msg}"
                     )
+                    exc.comfy_service = _comfy_service_for_addr(addr)
+                    raise exc
     ws.close()
 
     return get_history(prompt_id, target=addr)[prompt_id]
@@ -625,6 +641,65 @@ def api_healthz():
 
 
 # =============================================================================
+# Log tails — /logs/<service>?lines=N
+# =============================================================================
+# Each systemd service writes to a known file; we tail that file rather than
+# shelling out to journalctl (which would need privilege escalation).
+_LOG_FILES = {
+    "ai-studio":    "/var/log/ai-studio.log",
+    "main":         "/var/log/comfy-main.log",
+    "hunyuan":      "/var/log/comfy-hunyuan.log",
+    "trellis":      "/var/log/comfy-trellis.log",
+    "bootstrap":    "/var/log/ai-studio-bootstrap.log",
+    "user-data":    "/var/log/ai-studio-user-data.log",
+}
+
+
+def _tail_log(service, lines=100):
+    """Return the last `lines` lines of one of the known log files, or None."""
+    path = _LOG_FILES.get(service)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        # Cheap bounded tail: read the last 1 MB, split, keep last `lines`.
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 1_000_000))
+            data = f.read().decode("utf-8", errors="replace")
+        tail = data.splitlines()[-lines:]
+        return "\n".join(tail)
+    except Exception as e:
+        return f"[log read failed: {e}]"
+
+
+@app.route("/logs/<service>", methods=["GET"])
+def api_logs(service):
+    if service not in _LOG_FILES:
+        return jsonify({"error": f"unknown service '{service}'",
+                        "available": sorted(_LOG_FILES.keys())}), 404
+    try:
+        n = int(request.args.get("lines", "100"))
+        n = max(1, min(n, 2000))
+    except ValueError:
+        n = 100
+    text = _tail_log(service, n)
+    if text is None:
+        return jsonify({"error": f"log file for '{service}' not found"}), 404
+    return text, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+def _log_enriched_error(service, message, status=500):
+    """500 responses include a tail from the relevant ComfyUI log so Unity can
+    surface the real Python traceback without needing SSH access."""
+    tail = _tail_log(service, 40)
+    body = {"error": message}
+    if tail:
+        body["recent_logs"] = tail
+        body["logs_service"] = service
+    return jsonify(body), status
+
+
+# =============================================================================
 # Async Job System
 # =============================================================================
 # Long-running tasks (3D generation, etc.) can exceed Cloudflare tunnel timeouts.
@@ -836,7 +911,7 @@ def api_generate_3d():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -859,7 +934,7 @@ def api_generate_audio():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
 
 
 @app.route("/voices", methods=["GET"])
@@ -929,7 +1004,7 @@ def api_generate_voice_clone():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -974,7 +1049,7 @@ def api_generate_voice_clone_speech():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -1003,7 +1078,7 @@ def api_generate_image():
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
 
 
 def _parse_video_form(req):
@@ -1057,7 +1132,7 @@ def api_generate_video():
         return send_file(output_path, as_attachment=True)
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return _log_enriched_error(getattr(e, "comfy_service", "ai-studio"), str(e))
     finally:
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)

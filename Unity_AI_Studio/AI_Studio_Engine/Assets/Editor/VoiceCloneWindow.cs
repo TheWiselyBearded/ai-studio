@@ -313,11 +313,7 @@ public class VoiceCloneWindow : EditorWindow
         _progress = 0.9f;
         Repaint();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"API returned {response.StatusCode}: {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "Voice Clone");
 
         _progress = 1f;
         Repaint();
@@ -399,11 +395,7 @@ public class VoiceCloneWindow : EditorWindow
         _progress = 0.8f;
         Repaint();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"API returned {response.StatusCode}: {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "Voice Clone");
 
         string outputName = "cloned_voice.flac";
         if (response.Content.Headers.ContentDisposition?.FileName != null)
@@ -450,11 +442,7 @@ public class VoiceCloneWindow : EditorWindow
             using var request = AIStudioClient.CreateRequest(HttpMethod.Get, path);
             using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(2));
             using var response = await AIStudioClient.Http.SendAsync(request, cts.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                string body = await response.Content.ReadAsStringAsync();
-                throw new Exception($"Download failed ({response.StatusCode}): {body}");
-            }
+            await AIStudioClient.EnsureSuccessAsync(response, "Voice Clone (download)");
             byte[] bytes = await response.Content.ReadAsByteArrayAsync();
             string dest = Path.Combine(VoiceCacheDir, voiceName + ".pt");
             File.WriteAllBytes(dest, bytes);
@@ -490,11 +478,7 @@ public class VoiceCloneWindow : EditorWindow
             request.Content = form;
             using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(2));
             using var response = await AIStudioClient.Http.SendAsync(request, cts.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                string body = await response.Content.ReadAsStringAsync();
-                throw new Exception($"Upload failed ({response.StatusCode}): {body}");
-            }
+            await AIStudioClient.EnsureSuccessAsync(response, "Voice Clone (upload)");
             _statusMessage = $"Uploaded '{voiceName}' to server";
             _statusType = MessageType.Info;
             FetchVoices();

@@ -212,11 +212,7 @@ public class ImageGeneratorWindow : EditorWindow
         _progress = 0.8f;
         Repaint();
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"API returned {response.StatusCode}: {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "Image Generator");
 
         // Determine output filename from Content-Disposition header or fallback
         string outputName = "generated_image.png";

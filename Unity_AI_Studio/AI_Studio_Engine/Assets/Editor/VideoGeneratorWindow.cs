@@ -471,8 +471,7 @@ public class VideoGeneratorWindow : EditorWindow
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
         string body = await response.Content.ReadAsStringAsync();
 
-        if (!response.IsSuccessStatusCode)
-            throw new Exception($"Submit failed ({response.StatusCode}): {body}");
+        await AIStudioClient.EnsureSuccessAsync(response, "Video Generator (submit)");
 
         var result = JsonUtility.FromJson<JobSubmitResponse>(body);
         if (string.IsNullOrEmpty(result.job_id))
@@ -504,11 +503,7 @@ public class VideoGeneratorWindow : EditorWindow
         using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(5));
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync();
-            throw new Exception($"Download failed ({response.StatusCode}): {errorBody}");
-        }
+        await AIStudioClient.EnsureSuccessAsync(response, "Video Generator (download)");
 
         // Determine filename
         string outputName = "generated_video.mp4";
