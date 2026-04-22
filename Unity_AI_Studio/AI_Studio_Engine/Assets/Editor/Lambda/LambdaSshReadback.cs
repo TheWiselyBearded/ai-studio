@@ -127,7 +127,7 @@ namespace AIStudio.Lambda
                     {
                         if (watchCts.IsCancellationRequested)
                         {
-                            try { proc.Kill(entireProcessTree: true); } catch { }
+                            try { proc.Kill(); } catch { }
                             break;
                         }
                         await Task.Delay(100, CancellationToken.None);
