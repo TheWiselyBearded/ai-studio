@@ -289,11 +289,59 @@ Two things:
 
 ---
 
+---
+
+## Issue 8 — QwenTTS node failed to load: hidden runtime deps + sed missed indented decorator
+
+### Symptom
+First real voice-gen request from Unity returned:
+
+```
+ComfyUI execution error in node 15 (AiLab_Qwen3TTSVoiceDesign_Advanced):
+qwen_tts is not available.
+Import error: cannot import name 'Qwen3TTSTokenizerV1Config' from 'qwen_tts.core' (unknown location)
+```
+
+### Root cause — three stacked problems
+1. **`sox` wasn't installed.** `qwen_tts/core/tokenizer_25hz/vq/speech_vq.py` does
+   `import sox` but the QwenTTS node's `requirements.txt` does not list it.
+2. **`onnxruntime` wasn't installed** either, for the same reason.
+3. The decorator hotfix landed but **only for non-indented `@check_model_inputs()`**.
+   The decorator at line 498 of `modeling_qwen3_tts_tokenizer_v2.py` sits
+   inside a class body and is indented 4 spaces; my sed regex used `^@`
+   as anchor and didn't match.
+
+All three fail as the same user-facing error because ComfyUI catches the
+import exception and reports the last (most generic) symptom: "cannot import
+name X from qwen_tts.core" — which makes it look like a top-level package
+layout issue rather than an inner transitive failure.
+
+### Fix (applied in repo — [cloud/bootstrap.sh](bootstrap.sh))
+- `phase_apt` now installs `sox libsox-dev libsox-fmt-all`.
+- `install_comfy_main`'s QwenTTS block now runs `pip install sox onnxruntime librosa soundfile`
+  alongside the node's own `requirements.txt`.
+- Decorator sed now uses `-E` and anchors on `^(\s*)` so indented lines match.
+
+### Applied live on instance
+
+```bash
+sudo apt-get install -y sox libsox-dev
+source ~/miniforge3/etc/profile.d/conda.sh && conda activate comfy_main
+pip install sox onnxruntime librosa soundfile
+sed -i -E 's|^(\s*)@check_model_inputs\(\)|\1# @check_model_inputs()|' \
+    /home/ubuntu/Tools/ComfyUI_Main/custom_nodes/ComfyUI-QwenTTS/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py
+sudo systemctl restart comfy-main
+```
+
+After the restart ComfyUI logged `0.1 seconds: .../ComfyUI-QwenTTS` (clean load, no import error).
+
+---
+
 ## Summary of fixes landed in the repo
 
 | File | Change |
 |------|--------|
-| [cloud/bootstrap.sh](bootstrap.sh) | Install Flask server runtime deps; force-reinstall CU121 torch trio after every pip step that can bump torchaudio; Phase 5 treats empty-subdir trees as placeholder; `ai-studio.service` gets `PYTHONUNBUFFERED=1` |
+| [cloud/bootstrap.sh](bootstrap.sh) | Install Flask server runtime deps; force-reinstall CU121 torch trio after every pip step that can bump torchaudio; Phase 5 treats empty-subdir trees as placeholder; `ai-studio.service` gets `PYTHONUNBUFFERED=1`; apt installs `sox libsox-dev`; pip installs `sox onnxruntime librosa soundfile` for comfy_main; QwenTTS decorator sed now matches indented `@check_model_inputs()` |
 | [run_comfy_server.py](../run_comfy_server.py) | `cloudflared` invocation uses `--config os.devnull --no-autoupdate`; `print(..., flush=True)` in tunnel reader thread |
 
 ## Still open, not fixed in code yet

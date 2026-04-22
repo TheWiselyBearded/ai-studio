@@ -47,6 +47,7 @@ phase_apt() {
   apt-get install -y \
     git build-essential cmake ninja-build \
     ffmpeg libgl1 libglib2.0-0 \
+    sox libsox-dev libsox-fmt-all \
     curl wget unzip jq \
     python3-dev
 
@@ -133,16 +134,18 @@ install_comfy_main() {
   clone_or_update https://github.com/1038lab/ComfyUI-QwenTTS.git "$qwen_dir"
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install -r '$qwen_dir/requirements.txt' && \
+    pip install sox onnxruntime librosa soundfile && \
     pip install --force-reinstall --no-deps torch torchvision torchaudio \
       --index-url https://download.pytorch.org/whl/cu121 && \
     pip install 'transformers==4.57.3'"
 
-  # Hotfix 1: QwenTTS @check_model_inputs decorator incompatibility
+  # Hotfix 1: QwenTTS @check_model_inputs decorator incompatibility.
+  # Use -E and an \s* prefix so indented decorators inside class bodies also match.
   local qwen_tokenizer="$qwen_dir/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py"
   if [ -f "$qwen_tokenizer" ]; then
-    sed -i \
-      -e 's|^from transformers.utils.generic import check_model_inputs|# & (patched: AI Studio bootstrap)|' \
-      -e 's|^@check_model_inputs()|# @check_model_inputs()  # (patched: AI Studio bootstrap)|' \
+    sed -i -E \
+      -e 's|^(\s*)from transformers.utils.generic import check_model_inputs|\1# & (patched: AI Studio bootstrap)|' \
+      -e 's|^(\s*)@check_model_inputs\(\)|\1# @check_model_inputs()  # (patched: AI Studio bootstrap)|' \
       "$qwen_tokenizer" || true
   fi
 
