@@ -1,0 +1,98 @@
+{
+  "10": {
+    "inputs": {
+      "character": "Female",
+      "style": "Warm",
+      "custom_instruct": ""
+    },
+    "class_type": "AILab_Qwen3TTSVoiceInstruct",
+    "_meta": {
+      "title": "Voice Instruct (QwenTTS)"
+    }
+  },
+  "11": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "/api/view?filename=ComfyUI_00004_.flac&type=output&subfolder=audio&rand=0.857705978773012",
+      "audio": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "audioUI": "/api/view?filename=ComfyUI_temp_klylu_00001_.flac&type=temp&subfolder=&rand=0.23521763156087439",
+      "audio": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "14": {
+    "inputs": {
+      "preview_markdown": "gender: Female.\nage: Adult.\npitch: Mid female/male-agnostic pitch with a gentle downward tilt at phrase ends to convey comfort.\nspeed: Slightly slow, unhurried pacing with soft, even rhythm.\nvolume: Moderate and cozy, never sharp or forceful.\nclarity: Clear articulation with softened consonant edges.\nfluency: Very fluent, no hesitations.\naccent: Neutral.\ntexture: Warm, velvety, smooth timbre.\nemotion: Reassuring and kind.\ntone: Gentle, inviting, and supportive.\npersonality: Empathetic, patient, and caring.\nstyle note: Make the listener feel safe and welcomed.",
+      "preview_text": "gender: Female.\nage: Adult.\npitch: Mid female/male-agnostic pitch with a gentle downward tilt at phrase ends to convey comfort.\nspeed: Slightly slow, unhurried pacing with soft, even rhythm.\nvolume: Moderate and cozy, never sharp or forceful.\nclarity: Clear articulation with softened consonant edges.\nfluency: Very fluent, no hesitations.\naccent: Neutral.\ntexture: Warm, velvety, smooth timbre.\nemotion: Reassuring and kind.\ntone: Gentle, inviting, and supportive.\npersonality: Empathetic, patient, and caring.\nstyle note: Make the listener feel safe and welcomed.",
+      "previewMode": null,
+      "source": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "17": {
+    "inputs": {
+      "voice_name": "voice_1.pt",
+      "custom_path": "C:\\Users\\abahrema\\Documents\\Tools\\ComfyUI_Main\\output\\qwen3-tts_voices\\voice_1.pt"
+    },
+    "class_type": "AILab_Qwen3TTSLoadVoice",
+    "_meta": {
+      "title": "Load Voice (QwenTTS)"
+    }
+  },
+  "19": {
+    "inputs": {
+      "target_text": "Hello, this is a cloned voice. boom boom pow love pussy money weed",
+      "model_size": "1.7B",
+      "language": "Auto",
+      "reference_text": "",
+      "x_vector_only": false,
+      "unload_models": true,
+      "seed": 724849840901351,
+      "reference_audio": [
+        "20",
+        0
+      ],
+      "voice": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "AILab_Qwen3TTSVoiceClone",
+    "_meta": {
+      "title": "Voice Clone (QwenTTS)"
+    }
+  },
+  "20": {
+    "inputs": {
+      "audio": "VO_M3_1-8.wav",
+      "audioUI": "/api/view?filename=VO_M3_1-8.wav&type=input&subfolder=&rand=0.06679078283751672"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Audio"
+    }
+  }
+}

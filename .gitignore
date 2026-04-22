@@ -1,0 +1,108 @@
+# =============================================================================
+# Secrets
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# =============================================================================
+# AI Studio project artifacts
+# =============================================================================
+# Generation outputs — regenerated at runtime by the Unity windows / Flask API.
+results/
+input/
+Unity_AI_Studio/AI_Studio_Engine/Assets/Generated3D/
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedAudio/
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedImages/
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedVideos/
+# …and their Unity .meta siblings.
+Unity_AI_Studio/AI_Studio_Engine/Assets/Generated3D.meta
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedAudio.meta
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedImages.meta
+Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedVideos.meta
+
+# Voice clone local cache (populated by the Download-to-cache button).
+Unity_AI_Studio/AI_Studio_Engine/Library/AIStudio/
+
+# Deployment bundle — published as a GitHub release asset, not checked in.
+ai-studio-light.zip
+ai-studio-light/
+
+# Model weights (should live on Lambda persistent filesystem, never in repo).
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+
+# =============================================================================
+# Unity (standard ignores)
+# =============================================================================
+Unity_AI_Studio/AI_Studio_Engine/[Ll]ibrary/
+Unity_AI_Studio/AI_Studio_Engine/[Tt]emp/
+Unity_AI_Studio/AI_Studio_Engine/[Oo]bj/
+Unity_AI_Studio/AI_Studio_Engine/[Bb]uild/
+Unity_AI_Studio/AI_Studio_Engine/[Bb]uilds/
+Unity_AI_Studio/AI_Studio_Engine/[Ll]ogs/
+Unity_AI_Studio/AI_Studio_Engine/[Uu]ser[Ss]ettings/
+Unity_AI_Studio/AI_Studio_Engine/[Mm]emory[Cc]aptures/
+Unity_AI_Studio/AI_Studio_Engine/[Rr]ecordings/
+
+# Generated Unity project files
+Unity_AI_Studio/AI_Studio_Engine/*.csproj
+Unity_AI_Studio/AI_Studio_Engine/*.csproj.lscache
+Unity_AI_Studio/AI_Studio_Engine/*.unityproj
+Unity_AI_Studio/AI_Studio_Engine/*.sln
+Unity_AI_Studio/AI_Studio_Engine/*.slnx
+Unity_AI_Studio/AI_Studio_Engine/*.suo
+Unity_AI_Studio/AI_Studio_Engine/*.tmp
+Unity_AI_Studio/AI_Studio_Engine/*.user
+Unity_AI_Studio/AI_Studio_Engine/*.userprefs
+Unity_AI_Studio/AI_Studio_Engine/*.pidb
+Unity_AI_Studio/AI_Studio_Engine/*.booproj
+Unity_AI_Studio/AI_Studio_Engine/*.svd
+Unity_AI_Studio/AI_Studio_Engine/*.pdb
+Unity_AI_Studio/AI_Studio_Engine/*.mdb
+Unity_AI_Studio/AI_Studio_Engine/*.opendb
+Unity_AI_Studio/AI_Studio_Engine/*.VC.db
+
+# Unity crash dumps
+Unity_AI_Studio/AI_Studio_Engine/sysinfo.txt
+Unity_AI_Studio/AI_Studio_Engine/crashlytics-build.properties
+Unity_AI_Studio/AI_Studio_Engine/*.stackdump
+
+# Asset meta data should be tracked — explicitly DO NOT ignore .meta files.
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# =============================================================================
+# IDE / editor
+# =============================================================================
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# OS
+# =============================================================================
+Thumbs.db
+desktop.ini
+.DS_Store
+ehthumbs.db

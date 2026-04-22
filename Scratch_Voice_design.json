@@ -1,0 +1,81 @@
+{
+  "10": {
+    "inputs": {
+      "character": "Female",
+      "style": "Warm",
+      "custom_instruct": ""
+    },
+    "class_type": "AILab_Qwen3TTSVoiceInstruct",
+    "_meta": {
+      "title": "Voice Instruct (QwenTTS)"
+    }
+  },
+  "11": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "audioUI": "",
+      "audio": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "12": {
+    "inputs": {
+      "audioUI": "",
+      "audio": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "Preview Audio"
+    }
+  },
+  "14": {
+    "inputs": {
+      "preview_markdown": "",
+      "preview_text": "",
+      "previewMode": null,
+      "source": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "15": {
+    "inputs": {
+      "text": "You can now easily use the voice creation nodes. In the Voice Design Node, select the character and voice tone/style you want to create. In the Voice Instruct Node, enter the text you want to speak. Connect the output of the Voice Design Node to the Voice Instruct Node, and you can use the selected voice to read the text you want to express.\n",
+      "instruct": [
+        "10",
+        0
+      ],
+      "model_size": "1.7B",
+      "device": "auto",
+      "precision": "bf16",
+      "language": "Auto",
+      "max_new_tokens": 2048,
+      "do_sample": false,
+      "top_p": 0.9,
+      "top_k": 50,
+      "temperature": 0.9,
+      "repetition_penalty": 1,
+      "attention": "auto",
+      "unload_models": true,
+      "seed": 916180555702661
+    },
+    "class_type": "AILab_Qwen3TTSVoiceDesign_Advanced",
+    "_meta": {
+      "title": "Voice Design (QwenTTS) Advanced"
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "1": {
+    "inputs": {
+      "preview_markdown": "",
+      "preview_text": "",
+      "previewMode": null,
+      "source": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "2": {
+    "inputs": {
+      "preview_markdown": "",
+      "preview_text": "",
+      "previewMode": null,
+      "source": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Preview as Text"
+    }
+  },
+  "6": {
+    "inputs": {
+      "model_size": "large-v3-turbo",
+      "language": "zh",
+      "unload_models": true,
+      "audio": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "AILab_Qwen3TTSWhisperSTT",
+    "_meta": {
+      "title": "Whisper STT (QwenTTS)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "reference_text": [
+        "6",
+        0
+      ],
+      "model_size": "1.7B",
+      "device": "auto",
+      "precision": "bf16",
+      "x_vector_only": false,
+      "voice_name": "voice_1",
+      "save_path": "",
+      "unload_models": true,
+      "reference_audio": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "AILab_Qwen3TTSVoicesLibrary",
+    "_meta": {
+      "title": "Create Voice (QwenTTS)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "audio": "VO_M3_1-8.wav",
+      "audioUI": ""
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Load Audio"
+    }
+  }
+}

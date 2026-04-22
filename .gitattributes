@@ -1,0 +1,63 @@
+# =============================================================================
+# Line endings
+# =============================================================================
+* text=auto eol=lf
+
+# Force LF on shell scripts (critical — Lambda bootstrap.sh must not have CRLF)
+*.sh         text eol=lf
+*.py         text eol=lf
+*.yaml       text eol=lf
+*.yml        text eol=lf
+*.json       text eol=lf
+
+# Keep CRLF on Windows-only launchers
+*.bat        text eol=crlf
+*.ps1        text eol=crlf
+
+# =============================================================================
+# Git LFS — binary formats that can get large
+# =============================================================================
+
+# 3D / mesh
+*.glb        filter=lfs diff=lfs merge=lfs -text
+*.gltf       filter=lfs diff=lfs merge=lfs -text
+*.fbx        filter=lfs diff=lfs merge=lfs -text
+*.obj        filter=lfs diff=lfs merge=lfs -text
+*.blend      filter=lfs diff=lfs merge=lfs -text
+*.usd        filter=lfs diff=lfs merge=lfs -text
+*.usdz       filter=lfs diff=lfs merge=lfs -text
+
+# Audio
+*.wav        filter=lfs diff=lfs merge=lfs -text
+*.flac       filter=lfs diff=lfs merge=lfs -text
+*.mp3        filter=lfs diff=lfs merge=lfs -text
+*.ogg        filter=lfs diff=lfs merge=lfs -text
+*.aiff       filter=lfs diff=lfs merge=lfs -text
+
+# Video
+*.mp4        filter=lfs diff=lfs merge=lfs -text
+*.mov        filter=lfs diff=lfs merge=lfs -text
+*.webm       filter=lfs diff=lfs merge=lfs -text
+*.mkv        filter=lfs diff=lfs merge=lfs -text
+
+# Images (usually small but can balloon for HDR / PSD / EXR)
+*.psd        filter=lfs diff=lfs merge=lfs -text
+*.tga        filter=lfs diff=lfs merge=lfs -text
+*.exr        filter=lfs diff=lfs merge=lfs -text
+*.hdr        filter=lfs diff=lfs merge=lfs -text
+*.tif        filter=lfs diff=lfs merge=lfs -text
+*.tiff       filter=lfs diff=lfs merge=lfs -text
+
+# Unity binary assets
+# Note: .asset / .prefab are text (YAML) when the project uses Force Text
+# serialization, which is Unity's default. They stay in regular git so diffs
+# work. Only .unitypackage (always binary) goes to LFS.
+*.unitypackage  filter=lfs diff=lfs merge=lfs -text
+
+# Archives
+*.zip        filter=lfs diff=lfs merge=lfs -text
+*.tar.gz     filter=lfs diff=lfs merge=lfs -text
+*.7z         filter=lfs diff=lfs merge=lfs -text
+
+# Note: model weights (*.safetensors, *.pt, *.ckpt, *.bin) are .gitignore'd
+# rather than LFS'd — they belong on the Lambda persistent filesystem.
