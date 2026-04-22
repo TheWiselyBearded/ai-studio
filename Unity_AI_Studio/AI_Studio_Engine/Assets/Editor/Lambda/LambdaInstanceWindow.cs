@@ -54,6 +54,12 @@ namespace AIStudio.Lambda
             EditorApplication.update += OnEditorUpdate;
             LambdaInstanceState.Changed += Repaint;
             _ = RefreshAllAsync();
+            // When the window opens and there's already an active instance,
+            // re-pull the tunnel URL — the service may have restarted while
+            // the window was closed, giving cloudflared a fresh URL.
+            if (LambdaInstanceState.HasActiveInstance
+                && !string.IsNullOrEmpty(LambdaInstanceState.PublicIp))
+                _ = RefreshTunnelUrlAsync();
         }
 
         private void OnDisable()
@@ -145,6 +151,10 @@ namespace AIStudio.Lambda
                 {
                     EditorGUIUtility.systemCopyBuffer = LambdaInstanceState.TunnelUrl ?? string.Empty;
                 }
+            }
+            if (GUILayout.Button("Refresh Tunnel URL"))
+            {
+                _ = RefreshTunnelUrlAsync();
             }
             EditorGUILayout.EndHorizontal();
 
@@ -350,6 +360,46 @@ namespace AIStudio.Lambda
                 _isRefreshing = false;
                 Repaint();
             }
+        }
+
+        /// SSH-poll the instance for its current /var/ai-studio/tunnel.url.
+        /// Updates both LambdaInstanceState.TunnelUrl and, if the endpoint
+        /// is active in Remote mode, AIStudioSettings.RemoteBaseUrl — which
+        /// in turn writes to Assets/StreamingAssets/AIStudio/endpoint.json
+        /// so every generator window picks it up on next OnGUI tick.
+        private async Task RefreshTunnelUrlAsync()
+        {
+            if (string.IsNullOrEmpty(LambdaInstanceState.PublicIp))
+            {
+                ShowNotification(new GUIContent("No public IP yet"));
+                return;
+            }
+            var res = await LambdaSshReadback.FetchCurrentTunnelAsync(
+                LambdaInstanceState.PublicIp,
+                AIStudioSettings.SshPrivateKeyPath);
+
+            if (!res.Success)
+            {
+                _refreshError = $"Tunnel refresh failed: {res.Error}";
+                Repaint();
+                return;
+            }
+
+            if (res.TunnelUrl == LambdaInstanceState.TunnelUrl)
+            {
+                ShowNotification(new GUIContent("Tunnel URL unchanged"));
+                return;
+            }
+
+            LambdaInstanceState.TunnelUrl = res.TunnelUrl;
+            if (AIStudioSettings.ActiveMode == EndpointMode.Remote
+                || string.IsNullOrEmpty(AIStudioSettings.RemoteBaseUrl))
+            {
+                AIStudioSettings.RemoteBaseUrl = res.TunnelUrl;
+                AIStudioSettings.ActiveMode = EndpointMode.Remote;
+            }
+            ShowNotification(new GUIContent("Tunnel URL updated"));
+            Repaint();
         }
 
         private async Task RefreshInstancesAsync()

@@ -410,6 +410,10 @@ StandardError=append:/var/log/ai-studio.log
 WantedBy=multi-user.target"
 
   # Tunnel URL watcher: tail the log, grep for the trycloudflare URL, persist it.
+  # MUST NOT exit after the first URL — ai-studio.service gets restarted on
+  # errors or by the user, and each restart gives cloudflared a fresh quick
+  # tunnel URL. The watcher stays running and updates tunnel.url whenever the
+  # URL changes; Unity polls this file over SSH to refresh its endpoint.
   cat > /usr/local/bin/ai-studio-tunnel-watch.sh <<'WATCH'
 #!/usr/bin/env bash
 set -u
@@ -417,14 +421,14 @@ STATE_DIR="/var/ai-studio"
 mkdir -p "$STATE_DIR"
 LOG="/var/log/ai-studio.log"
 touch "$LOG"
-: > "$STATE_DIR/tunnel.url"
+CURRENT=""
+if [ -f "$STATE_DIR/tunnel.url" ]; then CURRENT="$(cat "$STATE_DIR/tunnel.url")"; fi
 tail -F "$LOG" 2>/dev/null | while IFS= read -r line; do
-  if url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | head -n1); then
-    if [ -n "$url" ]; then
-      echo "$url" > "$STATE_DIR/tunnel.url"
-      touch "$STATE_DIR/ready"
-      exit 0
-    fi
+  url=$(echo "$line" | grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | head -n1)
+  if [ -n "$url" ] && [ "$url" != "$CURRENT" ]; then
+    echo "$url" > "$STATE_DIR/tunnel.url"
+    touch "$STATE_DIR/ready"
+    CURRENT="$url"
   fi
 done
 WATCH

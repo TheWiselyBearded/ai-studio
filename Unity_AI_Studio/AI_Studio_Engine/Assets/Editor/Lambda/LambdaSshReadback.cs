@@ -27,6 +27,33 @@ namespace AIStudio.Lambda
 
         /// Poll the instance until both /var/ai-studio/ready exists and tunnel.url
         /// is non-empty. Returns the tunnel URL, or an error description.
+        /// Quick non-blocking fetch of the current tunnel URL. Used by the
+        /// periodic refresh button / window refresh. Returns empty Success=false
+        /// if bootstrap isn't ready yet rather than polling.
+        public static async Task<TunnelReadResult> FetchCurrentTunnelAsync(
+            string publicIp,
+            string sshPrivateKeyPath,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(publicIp))
+                return new TunnelReadResult { Success = false, Error = "Instance has no public IP." };
+            if (string.IsNullOrWhiteSpace(sshPrivateKeyPath) || !File.Exists(sshPrivateKeyPath))
+                return new TunnelReadResult { Success = false, Error = "SSH private key not configured." };
+
+            var probe = await RunSshAsync(
+                publicIp, sshPrivateKeyPath,
+                "cat /var/ai-studio/tunnel.url 2>/dev/null",
+                TimeSpan.FromSeconds(12), ct);
+
+            if (probe.ExitCode == 0)
+            {
+                var url = probe.Stdout?.Trim();
+                if (!string.IsNullOrEmpty(url) && url.StartsWith("https://"))
+                    return new TunnelReadResult { Success = true, TunnelUrl = url };
+            }
+            return new TunnelReadResult { Success = false, Error = probe.Stderr?.Trim() ?? "tunnel.url not set yet." };
+        }
+
         public static async Task<TunnelReadResult> WaitForTunnelAsync(
             string publicIp,
             string sshPrivateKeyPath,

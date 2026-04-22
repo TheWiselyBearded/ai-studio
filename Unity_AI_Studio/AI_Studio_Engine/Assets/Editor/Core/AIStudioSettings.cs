@@ -37,8 +37,21 @@ namespace AIStudio.Core
 
         public static string RemoteBaseUrl
         {
-            get => EditorPrefs.GetString(KeyRemoteBase, string.Empty);
-            set { EditorPrefs.SetString(KeyRemoteBase, value ?? string.Empty); Changed?.Invoke(); }
+            get
+            {
+                // Project-local manifest is source of truth when present, so multiple
+                // developers / tabs see the same endpoint. Fall back to EditorPrefs.
+                var manifest = AIStudioEndpointManifest.Read();
+                if (!string.IsNullOrEmpty(manifest.remoteBaseUrl))
+                    return manifest.remoteBaseUrl;
+                return EditorPrefs.GetString(KeyRemoteBase, string.Empty);
+            }
+            set
+            {
+                EditorPrefs.SetString(KeyRemoteBase, value ?? string.Empty);
+                AIStudioEndpointManifest.Write(value ?? string.Empty);
+                Changed?.Invoke();
+            }
         }
 
         public static EndpointMode ActiveMode

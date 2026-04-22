@@ -26,6 +26,12 @@ Unity_AI_Studio/AI_Studio_Engine/Assets/GeneratedVideos.meta
 # Voice clone local cache (populated by the Download-to-cache button).
 Unity_AI_Studio/AI_Studio_Engine/Library/AIStudio/
 
+# Cloud endpoint manifest. Quick-tunnel URLs rotate on every instance restart,
+# so this file changes constantly and shouldn't end up in git history.
+# Auth tokens are per-user EditorPrefs; this file only holds the URL.
+Unity_AI_Studio/AI_Studio_Engine/Assets/StreamingAssets/AIStudio/
+Unity_AI_Studio/AI_Studio_Engine/Assets/StreamingAssets/AIStudio.meta
+
 # Deployment bundle — published as a GitHub release asset, not checked in.
 ai-studio-light.zip
 ai-studio-light/
