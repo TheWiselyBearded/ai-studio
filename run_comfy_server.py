@@ -1106,10 +1106,18 @@ def api_generate_legacy():
 # =============================================================================
 
 def _start_cloudflare_tunnel(port):
-    """Spawn a cloudflared quick tunnel and print the public URL."""
+    """Spawn a cloudflared quick tunnel and print the public URL.
+
+    We pass --config /dev/null so cloudflared doesn't merge in a system-wide
+    /etc/cloudflared/config.yml (Lambda GPU images ship one for their Jupyter
+    named tunnel whose ingress rule returns 404 for non-matching hostnames,
+    which otherwise swallows every request to our quick tunnel URL).
+    """
     try:
         proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+            ["cloudflared", "tunnel", "--no-autoupdate",
+             "--config", os.devnull,
+             "--url", f"http://localhost:{port}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -1125,16 +1133,16 @@ def _start_cloudflare_tunnel(port):
         for line in proc.stderr:
             text = line.decode("utf-8", errors="replace").strip()
             if text:
-                print(f"[Tunnel] {text}")
+                print(f"[Tunnel] {text}", flush=True)
             match = re.search(r"(https://[a-zA-Z0-9\-]+\.trycloudflare\.com)", text)
             if match:
-                print()
-                print(f"  *** Tunnel URL: {match.group(1)} ***")
-                print()
+                print(flush=True)
+                print(f"  *** Tunnel URL: {match.group(1)} ***", flush=True)
+                print(flush=True)
 
     t = threading.Thread(target=_read_tunnel_url, daemon=True)
     t.start()
-    print("[Tunnel] Starting Cloudflare quick tunnel...")
+    print("[Tunnel] Starting Cloudflare quick tunnel...", flush=True)
 
 
 if __name__ == "__main__":

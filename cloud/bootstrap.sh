@@ -124,12 +124,17 @@ install_comfy_main() {
     pip install -U --pre comfyui-manager && \
     pip install 'transformers==4.57.3'"
 
+  # AI Studio Flask server runtime deps (not part of ComfyUI's requirements).
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install flask websocket-client python-dotenv requests"
+
   # QwenTTS custom node
   local qwen_dir="$comfy_dir/custom_nodes/ComfyUI-QwenTTS"
   clone_or_update https://github.com/1038lab/ComfyUI-QwenTTS.git "$qwen_dir"
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install -r '$qwen_dir/requirements.txt' && \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install --force-reinstall --no-deps torch torchvision torchaudio \
+      --index-url https://download.pytorch.org/whl/cu121 && \
     pip install 'transformers==4.57.3'"
 
   # Hotfix 1: QwenTTS @check_model_inputs decorator incompatibility
@@ -244,16 +249,30 @@ phase_models_link() {
     esac
     [ -d "$comfy_dir" ] || continue
 
-    if [ -L "$comfy_dir/models" ] || [ ! -e "$comfy_dir/models" ]; then
-      rm -rf "$comfy_dir/models"
+    # Upstream ComfyUI checks in a `models/` directory with empty subfolders
+    # (checkpoints/, clip/, vae/, ...). A naive "skip if non-empty" test
+    # skips the symlink because of those placeholder subdirs. Instead, if
+    # the directory exists and every file under it is zero bytes AND we
+    # haven't already symlinked it, nuke it and replace with the symlink.
+    if [ -L "$comfy_dir/models" ]; then
+      # Already a symlink — re-point to current FS_MOUNT just in case.
+      rm -f "$comfy_dir/models"
       ln -s "$FS_MOUNT" "$comfy_dir/models"
       chown -h "$AISTUDIO_USER:$AISTUDIO_USER" "$comfy_dir/models"
-    else
-      # Upstream checkout has a real directory; move its contents to FS and replace with symlink.
-      if [ -d "$comfy_dir/models" ] && [ -z "$(ls -A "$comfy_dir/models")" ]; then
-        rmdir "$comfy_dir/models"
+    elif [ -d "$comfy_dir/models" ]; then
+      local real_files
+      real_files="$(find "$comfy_dir/models" -type f -size +0c 2>/dev/null | head -n1)"
+      if [ -z "$real_files" ]; then
+        # Empty placeholder tree from the clone — remove it outright.
+        rm -rf "$comfy_dir/models"
         ln -s "$FS_MOUNT" "$comfy_dir/models"
+        chown -h "$AISTUDIO_USER:$AISTUDIO_USER" "$comfy_dir/models"
+      else
+        echo "  [models] $comfy_dir/models already has real weights; leaving it alone."
       fi
+    else
+      ln -s "$FS_MOUNT" "$comfy_dir/models"
+      chown -h "$AISTUDIO_USER:$AISTUDIO_USER" "$comfy_dir/models"
     fi
   done
 }
@@ -267,6 +286,7 @@ phase_bundle() {
   local tmp="/tmp/ai-studio-bundle"
   rm -rf "$tmp" && mkdir -p "$tmp"
   local archive="$tmp/bundle"
+  # AI_STUDIO_BUNDLE_URL can be http(s):// or file://.../local.zip. curl handles both.
   curl -fsSL -o "$archive" "$AI_STUDIO_BUNDLE_URL"
 
   if file "$archive" | grep -qi zip; then
@@ -356,7 +376,10 @@ RestartSec=5
 WantedBy=multi-user.target"
   fi
 
-  # Flask server + Cloudflare tunnel (--tunnel spawns cloudflared itself)
+  # Flask server + Cloudflare tunnel (--tunnel spawns cloudflared itself).
+  # PYTHONUNBUFFERED=1 is essential: systemd logs go to a file (not a TTY), so
+  # without it the [Tunnel] print() calls from the reader thread get buffered
+  # and the tunnel-watch service never sees the URL line.
   write_unit /etc/systemd/system/ai-studio.service "[Unit]
 Description=AI Studio Flask API (port 5001) + Cloudflare tunnel
 After=comfy-main.service comfy-hunyuan.service network-online.target
@@ -367,6 +390,7 @@ Type=simple
 User=$AISTUDIO_USER
 EnvironmentFile=/etc/ai-studio/.env
 Environment=AI_STUDIO_TOKEN=$AI_STUDIO_TOKEN
+Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$BUNDLE_DIR
 ExecStart=$MINIFORGE_DIR/envs/comfy_main/bin/python $BUNDLE_DIR/run_comfy_server.py \\
     --port 5001 --tunnel \\
