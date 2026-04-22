@@ -161,8 +161,11 @@ install_comfy_main() {
     pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
 
   # Setup Guide Phase 5 — Hotfix 4: transformers 5.x drops 'default' RoPE key.
+  # Also re-pin huggingface-hub into the 0.x series — transformers 4.57.3
+  # imports fail with `huggingface-hub>=0.34.0,<1.0 is required` if a prior
+  # install (diffusers, hf_hub_download extras, etc.) upgraded hub past 1.0.
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install 'transformers==4.57.3'"
+    pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
 
   # Setup Guide Phase 5 — Hotfix 2: @check_model_inputs decorator incompatibility.
   # -E + ^(\s*) prefix so indented decorators inside class bodies match too.
@@ -222,6 +225,13 @@ install_comfy_hunyuan() {
   # meta-package level, but transitive wheels can still slip through.
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+
+  # Pin transformers to the Setup Guide's version and keep huggingface-hub in
+  # the pre-1.0 series. diffusers + hydra-core + others often bump hub past
+  # 1.0 as a transitive, which breaks transformers 4.57.3's import-time check
+  # ("huggingface-hub>=0.34.0,<1.0 is required").
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
 
   # Compile C++ renderers (Hunyuan3D 2.1 bundled)
   if [ -d "$hy_dir/hy3dpaint/custom_rasterizer" ]; then
