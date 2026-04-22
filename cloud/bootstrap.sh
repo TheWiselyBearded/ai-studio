@@ -115,32 +115,56 @@ clone_or_update() {
 install_comfy_main() {
   local env_name="comfy_main"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Main"
-  echo "--- [comfy_main] ---"
+  echo "--- [comfy_main] (mirrors Dual-Environment Setup Guide, Part 3) ---"
   mkdir -p "$TOOLS_DIR"
   chown -R "$AISTUDIO_USER:$AISTUDIO_USER" "$TOOLS_DIR"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
+
+  # Install the CU121 torch stack from PyTorch's own index (this is what the
+  # Setup Guide's Windows conda command resolves to — `pytorch-cuda=12.1` on
+  # conda-forge Linux currently degrades to a CPU build, so we go direct).
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install -r '$comfy_dir/requirements.txt' && \
-    pip install -U --pre comfyui-manager && \
-    pip install 'transformers==4.57.3'"
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install -r '$comfy_dir/requirements.txt'"
+
+  # Setup Guide Phase 2: native comfyui-manager (V2 UI).
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install -U --pre comfyui-manager"
 
   # AI Studio Flask server runtime deps (not part of ComfyUI's requirements).
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install flask websocket-client python-dotenv requests"
 
-  # QwenTTS custom node
+  # Setup Guide Phase 4: QwenTTS custom node.
   local qwen_dir="$comfy_dir/custom_nodes/ComfyUI-QwenTTS"
   clone_or_update https://github.com/1038lab/ComfyUI-QwenTTS.git "$qwen_dir"
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install -r '$qwen_dir/requirements.txt' && \
-    pip install sox onnxruntime librosa soundfile && \
-    pip install --force-reinstall --no-deps torch torchvision torchaudio \
-      --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install sox onnxruntime librosa soundfile"
+
+  # Setup Guide Phase 5 — Hotfix 1 "CUDA Wipeout": QwenTTS requirements.txt
+  # asks for torch>=2.9.1 and silently upgrades torch to a PyPI wheel that
+  # either downgrades to CPU or links libcudart.so.13. Remediation from the
+  # Guide: uninstall torch and reinstall the CU121 GPU wheels. `--force-reinstall`
+  # guarantees we override whatever version the previous step landed on.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip uninstall -y torch torchvision torchaudio && \
+    pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu121"
+
+  # Drop any stray nvidia-*-cu13 wheels that transitive deps pulled in (onnxruntime-gpu,
+  # newer toolchain wheels, etc.). They get loaded before the cu12 ones in dlopen
+  # order and trip CUDNN_STATUS_NOT_INITIALIZED against the cu121 torch.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+
+  # Setup Guide Phase 5 — Hotfix 4: transformers 5.x drops 'default' RoPE key.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install 'transformers==4.57.3'"
 
-  # Hotfix 1: QwenTTS @check_model_inputs decorator incompatibility.
-  # Use -E and an \s* prefix so indented decorators inside class bodies also match.
+  # Setup Guide Phase 5 — Hotfix 2: @check_model_inputs decorator incompatibility.
+  # -E + ^(\s*) prefix so indented decorators inside class bodies match too.
   local qwen_tokenizer="$qwen_dir/qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py"
   if [ -f "$qwen_tokenizer" ]; then
     sed -i -E \
@@ -149,7 +173,11 @@ install_comfy_main() {
       "$qwen_tokenizer" || true
   fi
 
-  # Hotfix 2: pad_token_id in QwenTTS model configs
+  # Setup Guide Phase 5 — Hotfix 3: pad_token_id in QwenTTS model configs.
+  # These config.json files live inside HuggingFace-cached model weights,
+  # not in the node repo — they don't exist yet at install time and will be
+  # patched by a runtime shim (Hunyuan does the same). Kept as best-effort
+  # for pre-seeded models on the persistent FS.
   for cfg in $(run_as_user "find $comfy_dir -type f -name config.json -path '*qwen*' 2>/dev/null" || true); do
     if grep -q '"codec_pad_id"' "$cfg" && ! grep -q '"pad_token_id"' "$cfg"; then
       sed -i '/"codec_pad_id"/a\    "pad_token_id": 2150,' "$cfg" || true
@@ -160,11 +188,14 @@ install_comfy_main() {
 install_comfy_hunyuan() {
   local env_name="comfy_hunyuan"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Hunyuan"
-  echo "--- [comfy_hunyuan] ---"
+  echo "--- [comfy_hunyuan] (mirrors Dual-Environment Setup Guide, Part 2) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
+  # Pin CU121 torch stack via PyTorch's index (Setup Guide intent; conda-forge
+  # Linux doesn't ship pytorch-cuda=12.1 the way the Windows Guide assumes).
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu121 && \
     pip install -r '$comfy_dir/requirements.txt'"
 
   clone_or_update https://github.com/ltdrdata/ComfyUI-Manager.git "$comfy_dir/custom_nodes/ComfyUI-Manager"
@@ -172,6 +203,10 @@ install_comfy_hunyuan() {
   local hy_dir="$comfy_dir/custom_nodes/ComfyUI-Hunyuan3d-2-1"
   clone_or_update https://github.com/visualbruno/ComfyUI-Hunyuan3d-2-1 "$hy_dir"
 
+  # Setup Guide Phase 2 — Batch 1 "Core", Batch 2 "Vision Fixes", Batch 3 "3D Mesh",
+  # Batch 4 "Hardware", Batch 5 "Build Isolation Bypass". One pip call is equivalent
+  # but we split into two so `--no-build-isolation` only applies to the two packages
+  # that actually need it.
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install trimesh pyhocon addict hydra-core loguru diffusers hydra-zen \
                 scikit-image plyfile pymeshlab pytorch-lightning \
@@ -180,6 +215,12 @@ install_comfy_hunyuan() {
                 accelerate pybind11 && \
     pip install git+https://github.com/NVlabs/nvdiffrast/ --no-build-isolation && \
     pip install torch-scatter --no-build-isolation"
+
+  # Drop any stray nvidia-*-cu13 packages (onnxruntime-gpu + other deps can
+  # pull them in). conda's pytorch-cuda=12.1 lock prevents this at the
+  # meta-package level, but transitive wheels can still slip through.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
 
   # Compile C++ renderers (Hunyuan3D 2.1 bundled)
   if [ -d "$hy_dir/hy3dpaint/custom_rasterizer" ]; then
@@ -215,9 +256,12 @@ install_comfy_trellis() {
   [ "$SKIP_TRELLIS" = "1" ] && { echo "--- [comfy_trellis] skipped ---"; return; }
   local env_name="comfy_trellis"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Trellis"
-  echo "--- [comfy_trellis] ---"
+  echo "--- [comfy_trellis] (mirrors Dual-Environment Setup Guide, Part 4) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
+  # Setup Guide Phase 1: Trellis pins torch 2.7 / CUDA 12.8. Conda's pytorch
+  # channel doesn't ship pytorch-cuda=12.8 yet, so this env stays pip-only;
+  # the --index-url pin is the equivalent protection.
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 && \
     pip install -r '$comfy_dir/requirements.txt'"
