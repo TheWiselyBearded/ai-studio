@@ -67,8 +67,10 @@ namespace AIStudio.Lambda
             // Repaint every second to tick uptime/cost; cheap and window-scoped.
             if (LambdaInstanceState.HasActiveInstance)
                 Repaint();
-            // Auto-refresh remote status every 20s while the window is open.
-            if ((DateTime.UtcNow - _lastRefresh).TotalSeconds > 20 && !_isRefreshing)
+            // Auto-refresh remote status every 30s while the window is open, and
+            // pause entirely during a launch — that flow runs its own pollers.
+            if (!_isLaunching && !_isRefreshing
+                && (DateTime.UtcNow - _lastRefresh).TotalSeconds > 30)
                 _ = RefreshInstancesAsync();
         }
 
@@ -356,6 +358,7 @@ namespace AIStudio.Lambda
             {
                 _instances = await LambdaClient.ListInstancesAsync();
                 _lastRefresh = DateTime.UtcNow;
+                _refreshError = null;
 
                 // Reflect any IP/status changes for the active instance.
                 if (LambdaInstanceState.HasActiveInstance)
@@ -365,6 +368,12 @@ namespace AIStudio.Lambda
                         LambdaInstanceState.PublicIp = mine.Ip;
                 }
                 Repaint();
+            }
+            catch (LambdaClient.LambdaApiException ex) when (LambdaClient.IsTransient(ex))
+            {
+                // Back off silently — another tick will retry. Don't surface a red
+                // banner for rate limits (Cloudflare error 1015 / 429 / 503).
+                _lastRefresh = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
@@ -452,15 +461,27 @@ namespace AIStudio.Lambda
         private async Task<LambdaClient.Instance> WaitForActiveAsync(string id, TimeSpan timeout)
         {
             var deadline = DateTime.UtcNow + timeout;
+            var pollDelay = TimeSpan.FromSeconds(20);
             while (DateTime.UtcNow < deadline)
             {
-                await Task.Delay(TimeSpan.FromSeconds(15));
-                var inst = await LambdaClient.GetInstanceAsync(id);
-                if (inst == null) continue;
-                if (inst.Status == "active" && !string.IsNullOrEmpty(inst.Ip))
-                    return inst;
-                if (inst.Status == "terminated" || inst.Status == "terminating")
-                    throw new Exception($"Instance went to {inst.Status} before becoming active.");
+                await Task.Delay(pollDelay);
+                try
+                {
+                    var inst = await LambdaClient.GetInstanceAsync(id);
+                    if (inst == null) continue;
+                    if (inst.Status == "active" && !string.IsNullOrEmpty(inst.Ip))
+                        return inst;
+                    if (inst.Status == "terminated" || inst.Status == "terminating")
+                        throw new Exception($"Instance went to {inst.Status} before becoming active.");
+                    // Reset delay after a good response.
+                    pollDelay = TimeSpan.FromSeconds(20);
+                }
+                catch (LambdaClient.LambdaApiException ex) when (LambdaClient.IsTransient(ex))
+                {
+                    // Exponential backoff capped at 2 minutes when Cloudflare/edge rate-limits.
+                    pollDelay = TimeSpan.FromSeconds(Math.Min(120, pollDelay.TotalSeconds * 2));
+                    Debug.Log($"[Lambda] Transient poll error ({ex.Code}); backing off to {pollDelay.TotalSeconds:F0}s");
+                }
             }
             throw new TimeoutException("Instance did not become active within " + timeout);
         }

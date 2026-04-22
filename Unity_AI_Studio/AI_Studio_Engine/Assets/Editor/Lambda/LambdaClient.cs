@@ -55,6 +55,18 @@ namespace AIStudio.Lambda
             }
 
             string body = await resp.Content.ReadAsStringAsync();
+
+            // Cloudflare sometimes fronts cloud.lambda.ai and rate-limits with a 429 or
+            // 503 HTML page ("error code: 1015"). Treat those as transient.
+            bool looksLikeHtml = body.TrimStart().StartsWith("<", StringComparison.Ordinal);
+            if (looksLikeHtml)
+            {
+                string snippet = body.Length > 200 ? body.Substring(0, 200) + "…" : body;
+                string code = body.Contains("1015", StringComparison.Ordinal) ? "rate_limited" : "upstream_html";
+                throw new LambdaApiException((int)resp.StatusCode, code,
+                    $"Cloudflare/edge returned HTML (likely rate-limited): {snippet}", null);
+            }
+
             JObject parsed;
             try { parsed = string.IsNullOrWhiteSpace(body) ? new JObject() : JObject.Parse(body); }
             catch (JsonReaderException)
@@ -73,6 +85,14 @@ namespace AIStudio.Lambda
             }
 
             return parsed["data"] ?? parsed;
+        }
+
+        public static bool IsTransient(LambdaApiException ex)
+        {
+            if (ex == null) return false;
+            if (ex.StatusCode == 429 || ex.StatusCode == 502 || ex.StatusCode == 503 || ex.StatusCode == 504) return true;
+            if (ex.Code == "rate_limited" || ex.Code == "upstream_html" || ex.Code == "network") return true;
+            return false;
         }
 
         // ---------------- Instance types ----------------
