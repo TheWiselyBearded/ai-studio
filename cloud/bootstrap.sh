@@ -234,10 +234,12 @@ install_comfy_hunyuan() {
   fi
 
   # Hotfix: transformers check_torch_load_is_safe blocks legit .bin loads
-  # (CVE-2025-32434 guard — Setup Guide Part 2 Phase 4 Hotfix 2). Setup Guide
-  # says: "replaced the contents of def check_torch_load_is_safe(): with pass".
-  # Our regex also accepts the `-> None:` return annotation that newer
-  # transformers versions emit, which an earlier simpler version missed.
+  # (CVE-2025-32434 guard — Setup Guide Part 2 Phase 4 Hotfix 2). Setup Guide:
+  # "replaced the contents of def check_torch_load_is_safe(): with pass".
+  #
+  # Use a line-based walk rather than a multiline regex: a greedy regex
+  # happily consumes adjacent indented def bodies and nukes other functions
+  # (learned this by deleting is_torch_deterministic on a live instance).
   local import_utils="$MINIFORGE_DIR/envs/$env_name/lib/python3.10/site-packages/transformers/utils/import_utils.py"
   if [ -f "$import_utils" ]; then
     python3 - "$import_utils" <<'PY' || true
@@ -247,13 +249,26 @@ src = p.read_text()
 marker = "# AI Studio: disabled"
 if marker in src:
     sys.exit(0)
-pattern = re.compile(
-    r'(def\s+check_torch_load_is_safe\s*\([^)]*\)(?:\s*->\s*[^:]+)?\s*:\s*\n)(?:(?:\s+.+\n)|(?:\s*\n))+',
-    re.MULTILINE,
-)
-new = pattern.sub(r'\1    return None  ' + marker + ' (CVE-2025-32434)\n\n', src, count=1)
-if new != src:
-    p.write_text(new)
+lines = src.splitlines(keepends=True)
+out, i, patched = [], 0, False
+while i < len(lines):
+    if not patched and re.match(r'def\s+check_torch_load_is_safe\s*\(', lines[i]):
+        out.append(lines[i])
+        out.append('    return None  ' + marker + ' (CVE-2025-32434)\n')
+        i += 1
+        # Skip only the ORIGINAL function body: blank lines or indented lines.
+        while i < len(lines):
+            ln = lines[i]
+            if ln.strip() == '' or ln.startswith((' ', '\t')):
+                i += 1
+                continue
+            break
+        patched = True
+        continue
+    out.append(lines[i])
+    i += 1
+if patched:
+    p.write_text(''.join(out))
 PY
   fi
 }
