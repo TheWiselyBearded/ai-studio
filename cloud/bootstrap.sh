@@ -234,21 +234,26 @@ install_comfy_hunyuan() {
   fi
 
   # Hotfix: transformers check_torch_load_is_safe blocks legit .bin loads
+  # (CVE-2025-32434 guard — Setup Guide Part 2 Phase 4 Hotfix 2). Setup Guide
+  # says: "replaced the contents of def check_torch_load_is_safe(): with pass".
+  # Our regex also accepts the `-> None:` return annotation that newer
+  # transformers versions emit, which an earlier simpler version missed.
   local import_utils="$MINIFORGE_DIR/envs/$env_name/lib/python3.10/site-packages/transformers/utils/import_utils.py"
   if [ -f "$import_utils" ]; then
     python3 - "$import_utils" <<'PY' || true
-import io, re, sys, pathlib
+import re, sys, pathlib
 p = pathlib.Path(sys.argv[1])
 src = p.read_text()
 marker = "# AI Studio: disabled"
 if marker in src:
     sys.exit(0)
-new = re.sub(
-    r'(def\s+check_torch_load_is_safe\s*\([^)]*\)\s*:\s*\n)(?:\s+[^\n]+\n)+',
-    r'\1    pass  ' + marker + '\n',
-    src, count=1,
+pattern = re.compile(
+    r'(def\s+check_torch_load_is_safe\s*\([^)]*\)(?:\s*->\s*[^:]+)?\s*:\s*\n)(?:(?:\s+.+\n)|(?:\s*\n))+',
+    re.MULTILINE,
 )
-p.write_text(new)
+new = pattern.sub(r'\1    return None  ' + marker + ' (CVE-2025-32434)\n\n', src, count=1)
+if new != src:
+    p.write_text(new)
 PY
   fi
 }

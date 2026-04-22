@@ -214,16 +214,23 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
                 await Task.Delay(5000);
                 if (_cancelRequested) break;
 
-                string status = await CheckJobStatusAsync(jobId);
-                if (status == "complete")
+                var st = await CheckJobStatusAsync(jobId);
+                if (st.status == "complete")
                 {
                     _progress = 0.9f;
                     _statusMessage = "Downloading GLB...";
                     Repaint();
                     break;
                 }
-                if (status == "error" || status == "cancelled")
-                    throw new Exception($"Job {status}.");
+                if (st.status == "error" || st.status == "cancelled")
+                {
+                    // Fetch the last 60 lines of the hunyuan log so the full
+                    // Python traceback ends up in the Unity console even when
+                    // the /jobs/status response only carries the short summary.
+                    await TryFetchAndLogHunyuanTailAsync();
+                    var detail = string.IsNullOrEmpty(st.error) ? "(no detail)" : st.error;
+                    throw new Exception($"Job {st.status}: {detail}");
+                }
 
                 _progress = Mathf.Min(0.85f, _progress + 0.02f);
                 _statusMessage = $"Generating mesh ({jobId.Substring(0, Math.Min(8, jobId.Length))}...)...";
@@ -288,15 +295,32 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         return result.job_id;
     }
 
-    private async Task<string> CheckJobStatusAsync(string jobId)
+    private async Task<JobStatusResponse> CheckJobStatusAsync(string jobId)
     {
         string path = $"/jobs/{jobId}/status";
         using var request = AIStudioClient.CreateRequest(HttpMethod.Get, path);
         using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromSeconds(30));
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
         string body = await response.Content.ReadAsStringAsync();
-        var result = JsonUtility.FromJson<JobStatusResponse>(body);
-        return result.status;
+        return JsonUtility.FromJson<JobStatusResponse>(body);
+    }
+
+    /// Pull the last 60 lines of the Hunyuan ComfyUI log and dump as a
+    /// Debug.LogError. Async-job failures only give us status=error; this
+    /// gives the actual Python traceback without needing SSH.
+    private async Task TryFetchAndLogHunyuanTailAsync()
+    {
+        try
+        {
+            using var request = AIStudioClient.CreateRequest(HttpMethod.Get, "/logs/hunyuan?lines=60");
+            using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromSeconds(15));
+            var resp = await AIStudioClient.Http.SendAsync(request, cts.Token);
+            if (!resp.IsSuccessStatusCode) return;
+            var text = await resp.Content.ReadAsStringAsync();
+            if (!string.IsNullOrEmpty(text))
+                Debug.LogError($"[3D Generator] comfy-hunyuan log tail:\n{text}");
+        }
+        catch { /* best-effort */ }
     }
 
     private async Task<string> DownloadJobResultAsync(string jobId)
