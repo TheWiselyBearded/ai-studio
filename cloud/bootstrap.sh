@@ -23,7 +23,19 @@ rm -f "$STATE_DIR/ready"
 echo "=== AI Studio bootstrap started: $(date -u) ==="
 
 : "${AI_STUDIO_TOKEN:?AI_STUDIO_TOKEN is required}"
-: "${FS_MOUNT:=/lambda-fs/ai-studio-models}"
+
+# FS_MOUNT: where the persistent models filesystem is mounted. Lambda mounts at
+# /lambda/nfs/<fs-name> but historically the repo assumed /lambda-fs/. If the
+# user_data didn't set FS_MOUNT or set it to a path that doesn't exist, probe
+# for any mounted filesystem under /lambda/nfs/ that matches our convention
+# before falling back to the ephemeral /opt/ai-studio-models.
+if [ -z "${FS_MOUNT:-}" ] || [ ! -d "${FS_MOUNT}" ]; then
+  for candidate in /lambda/nfs/ai-studio-models-* /lambda-fs/ai-studio-models-*; do
+    if [ -d "$candidate" ]; then FS_MOUNT="$candidate"; break; fi
+  done
+fi
+: "${FS_MOUNT:=/opt/ai-studio-models}"
+echo "[bootstrap] FS_MOUNT=$FS_MOUNT"
 : "${AI_STUDIO_BUNDLE_URL:=https://github.com/TheWiselyBearded/ai-studio/releases/latest/download/ai-studio-light.zip}"
 : "${SKIP_TRELLIS:=0}"
 
@@ -97,7 +109,11 @@ phase_envs() {
   create_env comfy_main    3.10
   create_env comfy_hunyuan 3.10
   if [ "$SKIP_TRELLIS" != "1" ]; then
-    create_env comfy_trellis 3.11
+    # Python 3.12 matches the only cpython ABI for which ComfyUI-Trellis2
+    # ships Linux wheels (wheels/Linux/Torch291/*-cp312-cp312-linux_x86_64.whl).
+    # The Setup Guide's 3.11 is Windows-only; on Linux, 3.11 would force us
+    # to build cumesh/flex_gemm/o_voxel/nvdiffrec_render from source.
+    create_env comfy_trellis 3.12
   fi
 }
 
@@ -287,21 +303,131 @@ install_comfy_trellis() {
   [ "$SKIP_TRELLIS" = "1" ] && { echo "--- [comfy_trellis] skipped ---"; return; }
   local env_name="comfy_trellis"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Trellis"
-  echo "--- [comfy_trellis] (mirrors Dual-Environment Setup Guide, Part 4) ---"
+  echo "--- [comfy_trellis] (Linux equivalent of Setup Guide Part 4) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
-  # Setup Guide Phase 1: Trellis pins torch 2.7 / CUDA 12.8. Conda's pytorch
-  # channel doesn't ship pytorch-cuda=12.8 yet, so this env stays pip-only;
-  # the --index-url pin is the equivalent protection.
+  # Torch pin: the Linux Trellis2 wheels ship in two subdirs with different
+  # GPU arch targets:
+  #   wheels/Linux/Torch270/ — SASS for sm_80/86/89/90 (broad Ampere+Hopper)
+  #   wheels/Linux/Torch291/ — SASS for sm_120 ONLY (Blackwell — RTX 50xx/B200)
+  # PTX cannot JIT-downgrade across major arches, so Torch291 wheels ABORT
+  # with cudaErrorNoKernelImageForDevice on anything older than sm_120. We
+  # pick Torch270 for broad GPU compatibility (A10, A100, H100, RTX 4090).
+  #
+  # The Torch270 wheels aren't all pinned to torch 2.7.x despite the dir name:
+  # o_voxel needs c10::SymBool::guard_or_false (torch 2.8+) while the shipped
+  # nvdiffrast needs c10::cuda::SetDevice(int8) with NO bool arg (torch ≤ 2.7).
+  # These are ABI-incompatible. torch 2.8.0 satisfies o_voxel, and we rebuild
+  # nvdiffrast from source against 2.8 (it's open-source NVLabs code) to get
+  # matching SetDevice(int8, bool) symbols.
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 && \
+    pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128 && \
     pip install -r '$comfy_dir/requirements.txt'"
+
+  # torch 2.8 + cu128 pins libcusparseLt.so.0 at 0.6.3 via its metadata; the
+  # later 0.7.x wheel that some sub-deps pull doesn't expose the same SONAME
+  # layout and torch then fails with libcusparseLt.so.0 not found.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
 
   local trellis_dir="$comfy_dir/custom_nodes/ComfyUI-Trellis2"
   clone_or_update https://github.com/visualbruno/ComfyUI-Trellis2.git "$trellis_dir"
+
+  # Install the 5 shipped Torch270 Linux wheels (cumesh, flex_gemm,
+  # custom_rasterizer, o_voxel + nvdiffrast stub we'll replace) with --no-deps.
+  # Without --no-deps pip hits a resolver conflict: o_voxel 0.0.1 pins
+  # cumesh==0.0.1 (from a JeffreyXiang/CuMesh git source) while the wheels
+  # dir ships cumesh 1.0. The shipped cumesh 1.0 is what the node author
+  # actually uses; --no-deps keeps it and we handle real runtime deps below.
+  # Torch270 has NO nvdiffrec_render wheel — only Torch291 ships it, and the
+  # MeshOnly pipeline doesn't need it (that's a texture-projection extension).
   run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install meshlib requests pymeshlab opencv-python scipy open3d plotly rembg && \
-    pip install git+https://github.com/NVlabs/nvdiffrast/ --no-build-isolation"
+    pip install --no-deps \
+      '$trellis_dir/wheels/Linux/Torch270/cumesh-1.0-cp312-cp312-linux_x86_64.whl' \
+      '$trellis_dir/wheels/Linux/Torch270/flex_gemm-0.0.1-cp312-cp312-linux_x86_64.whl' \
+      '$trellis_dir/wheels/Linux/Torch270/custom_rasterizer-0.1-cp312-cp312-linux_x86_64.whl' \
+      '$trellis_dir/wheels/Linux/Torch270/o_voxel-0.0.1-cp312-cp312-linux_x86_64.whl'"
+
+  # Build nvdiffrast from source against the installed torch 2.8.0 so its
+  # c10::cuda::SetDevice symbol matches. TORCH_CUDA_ARCH_LIST covers Ampere
+  # (A10/A100 sm_86/80), Ada (RTX 4090 sm_89), Hopper (H100 sm_90). We
+  # deliberately skip the shipped Torch270 nvdiffrast wheel because it's
+  # linked against the torch-2.7 SetDevice(int8) single-arg signature.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    TORCH_CUDA_ARCH_LIST='8.0;8.6;8.9;9.0' pip install --no-build-isolation --no-deps \
+        git+https://github.com/NVlabs/nvdiffrast.git"
+
+  # Sparse convolution backend. flex_gemm's submanifold_conv3d wheel targets
+  # sm_120 ONLY and aborts on sm_86/89/90 with cudaErrorNoKernelImageForDevice.
+  # spconv-cu121 ships prebuilt cp312 wheels that work on all Ampere+ GPUs and
+  # is ABI-compatible with torch 2.8 via the standard CUDA driver. We set
+  # conv_backend='spconv' in scratch_Trellis3D.json to use this instead.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install --no-deps spconv-cu121 'cumm-cu121<0.8.0,>=0.7.11' && \
+    pip install pyyaml pybind11 fire pccm"
+
+  # Node's declared pip deps + the real runtime deps pip surfaced as missing
+  # after --no-deps (plyfile, trimesh are imported by o_voxel; zstandard,
+  # easydict by cumesh). transformers is imported by trellis2/modules/
+  # image_feature_extractor.py for DINOv3ViTModel — required even though
+  # the node's requirements.txt doesn't list it.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install -r '$trellis_dir/requirements.txt' && \
+    pip install plyfile trimesh zstandard easydict && \
+    pip install transformers accelerate safetensors"
+
+  # §7 Issue 3 recurrence: transformers/accelerate/open3d pull a torchaudio
+  # version pin that drifts past the torch 2.8.0 we started with, breaking
+  # torchaudio's extension load with `undefined symbol: torch_library_impl`.
+  # ComfyUI's comfy/ldm/lightricks/vae/audio_vae.py imports torchaudio
+  # unconditionally at startup, so this kills the service even though Trellis
+  # doesn't use audio. Re-pin the full trio with matching +cu128 versions.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip install --force-reinstall --no-deps torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128 && \
+    pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
+
+  # Also uninstall xformers if a transitive dep pulled it in. xformers
+  # published wheels are cu130/cp310 and mismatch our cu128/cp312 — its
+  # extensions crash on load. Trellis2's sparse attention has a try/except
+  # fallback to torch SDPA so xformers isn't needed.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip uninstall -y xformers 2>/dev/null || true"
+
+  # Drop any stray nvidia-*-cu13 wheels (onnxruntime-gpu, modern transformers,
+  # etc.). Same guard as the other two envs — §7 Issue 3.
+  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+
+  # DINOv3 weights. ComfyUI-Trellis2/nodes.py resolves via
+  #   folder_paths.models_dir / facebook / dinov3-vitl16-pretrain-lvd1689m /
+  #       model.safetensors
+  # and raises "Facebook Dinov3 model not found" if it's missing — NOT an
+  # HF auto-download. The model is gated on Meta's license, so this step
+  # only runs when HF_TOKEN is present in the environment (piped through
+  # /etc/ai-studio/.env via user_data_template.sh). If absent, the service
+  # starts fine but 3D generation will fail at the first Trellis node.
+  local dinov3_dir="$comfy_dir/models/facebook/dinov3-vitl16-pretrain-lvd1689m"
+  if [ -n "${HF_TOKEN:-}" ] && [ ! -s "$dinov3_dir/model.safetensors" ]; then
+    echo "  [trellis] fetching DINOv3 weights via HF_TOKEN"
+    mkdir -p "$dinov3_dir"
+    chown -R "$AISTUDIO_USER:$AISTUDIO_USER" "$comfy_dir/models/facebook"
+    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
+      HF_TOKEN='$HF_TOKEN' python -c \"
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id='facebook/dinov3-vitl16-pretrain-lvd1689m',
+    local_dir='$dinov3_dir',
+    allow_patterns=['*.json', '*.safetensors', 'LICENSE*'],
+    token='$HF_TOKEN',
+)
+\"" || echo "  [trellis] DINOv3 fetch FAILED — accept license at HF and retry"
+  elif [ -s "$dinov3_dir/model.safetensors" ]; then
+    echo "  [trellis] DINOv3 weights already present — skipping fetch"
+  else
+    echo "  [trellis] HF_TOKEN not set — skipping DINOv3 fetch (3D gen will fail until present)"
+  fi
 }
 
 phase_comfy() {
@@ -385,6 +511,12 @@ phase_bundle() {
   {
     echo "GEMINI_API_KEY=${GEMINI_API_KEY:-}"
     echo "RUNWAYML_API_SECRET=${RUNWAYML_API_SECRET:-}"
+    # DINOv3 (used by Trellis2) and BiRefNet are gated on HuggingFace; their
+    # from_pretrained() calls need HF_TOKEN to authenticate. Also accepted
+    # as HUGGINGFACE_HUB_TOKEN by the legacy client — both exported here so
+    # either lookup wins.
+    echo "HF_TOKEN=${HF_TOKEN:-}"
+    echo "HUGGINGFACE_HUB_TOKEN=${HF_TOKEN:-}"
   } > /etc/ai-studio/.env
   chmod 640 /etc/ai-studio/.env
 }
@@ -436,6 +568,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$AISTUDIO_USER
+EnvironmentFile=/etc/ai-studio/.env
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Hunyuan
 ExecStart=$MINIFORGE_DIR/envs/comfy_hunyuan/bin/python main.py --port 8001 --listen 127.0.0.1
@@ -456,6 +589,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$AISTUDIO_USER
+EnvironmentFile=/etc/ai-studio/.env
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Trellis
 ExecStart=$MINIFORGE_DIR/envs/comfy_trellis/bin/python main.py --port 8002 --listen 127.0.0.1
@@ -487,9 +621,10 @@ WorkingDirectory=$BUNDLE_DIR
 ExecStart=$MINIFORGE_DIR/envs/comfy_main/bin/python $BUNDLE_DIR/run_comfy_server.py \\
     --port 5001 --tunnel \\
     --auth-token \${AI_STUDIO_TOKEN} \\
-    --comfy-audio 127.0.0.1:8000 --comfy-3d 127.0.0.1:8001 \\
+    --comfy-audio 127.0.0.1:8000 --comfy-3d 127.0.0.1:8001 --comfy-trellis 127.0.0.1:8002 \\
     --comfy-3d-dir $TOOLS_DIR/ComfyUI_Hunyuan \\
-    --comfy-main-dir $TOOLS_DIR/ComfyUI_Main
+    --comfy-main-dir $TOOLS_DIR/ComfyUI_Main \\
+    --comfy-trellis-dir $TOOLS_DIR/ComfyUI_Trellis
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/ai-studio.log

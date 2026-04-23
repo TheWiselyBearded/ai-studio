@@ -18,17 +18,31 @@ from dotenv import load_dotenv  # pip install python-dotenv
 
 # --- Configuration ---
 # Each ComfyUI environment runs on its own port:
-#   ComfyUI_Hunyuan (3D)  → 8001  (Launch_Hunyuan.bat)
-#   ComfyUI_Main   (audio) → 8000  (Launch_Main.bat)
+#   ComfyUI_Hunyuan (3D Hunyuan)  → 8001  (Launch_Hunyuan.bat)
+#   ComfyUI_Main   (audio)        → 8000  (Launch_Main.bat)
+#   ComfyUI_Trellis (3D Trellis2) → 8002  (Launch_Trellis.bat)
 server_address_3d = "127.0.0.1:8001"
 server_address_audio = "127.0.0.1:8000"
+server_address_trellis = "127.0.0.1:8002"
 server_address = server_address_3d  # default for shared helpers
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 
-# --- 3D Workflow ---
+# --- 3D Workflow (Hunyuan) ---
 WORKFLOW_3D_FILE = "Scratch_Text3DPBR.json"
 WORKFLOW_3D_OUTPUT_NODE = "27"  # Preview3D — used to detect completion and get filename
+
+# --- 3D Workflow (Trellis2) ---
+# Converted from ComfyUI-Trellis2's example_workflows/MeshOnly.json via
+# a UI->API converter (see cloud/BOOTSTRAP_DEBUG if we need to regenerate it).
+# Node IDs we care about for runtime rewriting:
+#   "6"   Trellis2LoadImageWithTransparency   — image input (overridden at submit)
+#   "219" PrimitiveString                     — filename_prefix feeding ExportMesh
+#   "203" Trellis2ExportMesh                  — writes <prefix>_NNNNN_.glb to output/
+WORKFLOW_TRELLIS_FILE = "scratch_Trellis3D.json"
+WORKFLOW_TRELLIS_IMAGE_NODE = "6"
+WORKFLOW_TRELLIS_PREFIX_NODE = "219"
+WORKFLOW_TRELLIS_EXPORT_NODE = "203"
 
 # --- Image Workflow ---
 WORKFLOW_IMAGE_FILE = "scratch_ZImageTurbo.json"
@@ -50,8 +64,11 @@ RUNWAYML_API_SECRET = os.environ.get("RUNWAYML_API_SECRET")
 
 # The InPaint node saves the textured GLB directly to disk, bypassing ComfyUI's
 # /view API. Since both run on the same machine, we read the file from here.
+# Trellis2ExportMesh does the same — it saves to <ComfyUI_Trellis>/output/<prefix>_NNNNN_.glb
+# and its /history output is a STRING (the filename), not a file_info dict.
 COMFYUI_HUNYUAN_DIR = r"C:\Users\abahrema\Documents\Tools\ComfyUI_Hunyuan"
 COMFYUI_MAIN_DIR = r"C:\Users\abahrema\Documents\Tools\ComfyUI_Main"
+COMFYUI_TRELLIS_DIR = r"C:\Users\abahrema\Documents\Tools\ComfyUI_Trellis"
 
 
 # =============================================================================
@@ -288,6 +305,69 @@ def generate_3d(image_path):
     output_path = os.path.join(RESULTS_DIR, glb_filename)
     shutil.copy2(glb_path, output_path)
     print(f"[3D] Success! Textured PBR mesh saved to: {output_path}")
+    return output_path
+
+
+def generate_trellis_3d(image_path):
+    """Run the ComfyUI-Trellis2 MeshOnly pipeline on a single image and return the saved GLB path.
+
+    Unlike Hunyuan's InPaint which signals done via a Preview3D node, Trellis2's
+    ExportMesh returns a STRING through /history and drops the file itself at
+    <ComfyUI_Trellis>/output/<prefix>_NNNNN_.glb where NNNNN is an auto-counter
+    ComfyUI controls. We generate a fresh prefix per job (so concurrent jobs
+    don't collide on the counter) and glob for it afterwards.
+    """
+    import glob
+    target = server_address_trellis
+    # Trellis2LoadImageWithTransparency expects an RGBA source; the
+    # Trellis2PreProcessImage node reads alpha via output_np[:, :, 3] and
+    # crashes with IndexError on a 3-channel RGB. ensure_rgb_image would
+    # strip alpha, so we skip it here and let ComfyUI's /upload/image take
+    # the file as-is (PNG with alpha is the preferred format).
+
+    with open(os.path.join(SCRIPT_DIR, WORKFLOW_TRELLIS_FILE), "r", encoding="utf-8") as f:
+        workflow = json.load(f)
+
+    # Per-job prefix so concurrent requests don't share ComfyUI's output counter.
+    prefix = f"trellis_{uuid.uuid4().hex[:8]}"
+    workflow[WORKFLOW_TRELLIS_PREFIX_NODE]["inputs"]["value"] = prefix
+
+    print(f"[Trellis] Uploading {os.path.basename(image_path)}... (ComfyUI @ {target})")
+    uploaded_name = upload_image(image_path, target=target)
+    workflow[WORKFLOW_TRELLIS_IMAGE_NODE]["inputs"]["image"] = uploaded_name
+
+    print(f"[Trellis] Queueing workflow with filename_prefix={prefix}...")
+    run_comfyui_workflow(workflow, target=target)
+
+    # Trellis2ExportMesh saves to ComfyUI's output/ with its own counter suffix.
+    # The MeshWithTexturing workflow writes TWO files — <prefix>_WhiteMesh_NNNNN_.glb
+    # (geometry-only) and <prefix>_Textured_NNNNN_.glb (with textures). Prefer
+    # the Textured one; fall back to whatever's there (MeshOnly-style workflows
+    # produce a single file without the _Textured / _WhiteMesh suffix).
+    output_dir = os.path.join(COMFYUI_TRELLIS_DIR, "output")
+    textured = sorted(
+        glob.glob(os.path.join(output_dir, f"{prefix}_Textured_*.glb")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    if textured:
+        glb_path = textured[0]
+    else:
+        matches = sorted(
+            glob.glob(os.path.join(output_dir, f"{prefix}_*.glb")),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        if not matches:
+            raise FileNotFoundError(
+                f"Trellis GLB not found. Expected {prefix}_*.glb under {output_dir}."
+            )
+        glb_path = matches[0]
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    output_path = os.path.join(RESULTS_DIR, os.path.basename(glb_path))
+    shutil.copy2(glb_path, output_path)
+    print(f"[Trellis] Success! Mesh saved to: {output_path}")
     return output_path
 
 
@@ -744,6 +824,32 @@ def api_submit_3d():
         _jobs[job_id] = {"status": "running", "result_path": None, "error": None, "type": "3d", "temp_dir": temp_dir}
 
     t = threading.Thread(target=_run_job, args=(job_id, generate_3d, path), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id, "status": "running"})
+
+
+@app.route("/jobs/submit/trellis", methods=["POST"])
+def api_submit_trellis():
+    """Submit a Trellis2 3D generation job (image-to-3D). Returns a job ID immediately."""
+    import tempfile
+    temp_dir = tempfile.mkdtemp()
+
+    f = request.files.get("image") or request.files.get("front")
+    if f is None:
+        files = request.files.getlist("images")
+        f = files[0] if files else None
+    if f is None:
+        return jsonify({"error": "No image provided. Use field name 'image'."}), 400
+
+    path = os.path.join(temp_dir, f.filename)
+    f.save(path)
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "running", "result_path": None, "error": None, "type": "trellis", "temp_dir": temp_dir}
+
+    t = threading.Thread(target=_run_job, args=(job_id, generate_trellis_3d, path), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id, "status": "running"})
@@ -1251,12 +1357,16 @@ if __name__ == "__main__":
                         help="ComfyUI Hunyuan (3D) address (default: 127.0.0.1:8001)")
     parser.add_argument("--comfy-audio", type=str, default=None,
                         help="ComfyUI Main (audio) address (default: 127.0.0.1:8000)")
+    parser.add_argument("--comfy-trellis", type=str, default=None,
+                        help="ComfyUI Trellis2 (3D) address (default: 127.0.0.1:8002)")
     parser.add_argument("--comfy-server", type=str, default=None,
                         help="Override BOTH ComfyUI addresses (legacy, single-instance mode)")
     parser.add_argument("--comfy-3d-dir", type=str, default=None,
                         help="ComfyUI Hunyuan install directory (for reading textured GLBs)")
     parser.add_argument("--comfy-main-dir", type=str, default=None,
                         help="ComfyUI Main install directory (for reading cloned voices)")
+    parser.add_argument("--comfy-trellis-dir", type=str, default=None,
+                        help="ComfyUI Trellis install directory (for reading exported GLBs)")
     parser.add_argument("--tunnel", action="store_true",
                         help="Auto-launch a Cloudflare quick tunnel (requires cloudflared on PATH)")
     parser.add_argument("--auth-token", type=str, default=None,
@@ -1274,10 +1384,14 @@ if __name__ == "__main__":
         server_address_3d = args.comfy_3d
     if args.comfy_audio:
         server_address_audio = args.comfy_audio
+    if args.comfy_trellis:
+        server_address_trellis = args.comfy_trellis
     if args.comfy_3d_dir:
         COMFYUI_HUNYUAN_DIR = args.comfy_3d_dir
     if args.comfy_main_dir:
         COMFYUI_MAIN_DIR = args.comfy_main_dir
+    if args.comfy_trellis_dir:
+        COMFYUI_TRELLIS_DIR = args.comfy_trellis_dir
 
     if args.cli == "3d":
         if not args.image:
@@ -1297,6 +1411,7 @@ if __name__ == "__main__":
         print(f"AI Studio Server starting on http://127.0.0.1:{args.port}")
         print(f"ComfyUI backends:")
         print(f"  3D (Hunyuan):  {server_address_3d}")
+        print(f"  3D (Trellis):  {server_address_trellis}")
         print(f"  Audio (Main):  {server_address_audio}")
         print(f"Endpoints:")
         print(f"  POST /generate/3d                 — 3D model generation (multipart form)")
@@ -1306,6 +1421,8 @@ if __name__ == "__main__":
         print(f"  POST /generate/voice-clone        — Clone voice from audio (multipart form)")
         print(f"  POST /generate/voice-clone-speech — Speech with cloned voice (multipart form)")
         print(f"  GET  /voices                      — List cloned voices")
+        print(f"  POST /jobs/submit/3d               — Async Hunyuan 3D generation job")
+        print(f"  POST /jobs/submit/trellis          — Async Trellis2 3D generation job (image-only)")
         print(f"  POST /jobs/submit/video            — Async video generation job")
         print(f"  POST /generate                    — Legacy (auto-detects by content type)")
         print()

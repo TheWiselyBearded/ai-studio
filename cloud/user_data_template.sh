@@ -9,6 +9,8 @@
 #   {{BOOTSTRAP_URL}}          URL to the matching bootstrap.sh
 #   {{GEMINI_API_KEY}}         optional
 #   {{RUNWAYML_API_SECRET}}    optional
+#   {{HF_TOKEN}}               optional; needed to auto-fetch gated HF models
+#                              (DINOv3 for Trellis2, BiRefNet, etc.)
 #   {{SKIP_TRELLIS}}           "1" to skip comfy_trellis, "0" otherwise
 
 set -u
@@ -19,6 +21,7 @@ export FS_MOUNT="{{FS_MOUNT}}"
 export AI_STUDIO_BUNDLE_URL="{{AI_STUDIO_BUNDLE_URL}}"
 export GEMINI_API_KEY="{{GEMINI_API_KEY}}"
 export RUNWAYML_API_SECRET="{{RUNWAYML_API_SECRET}}"
+export HF_TOKEN="{{HF_TOKEN}}"
 export SKIP_TRELLIS="{{SKIP_TRELLIS}}"
 
 curl -fsSL "{{BOOTSTRAP_URL}}" -o /tmp/bootstrap.sh
