@@ -17,7 +17,11 @@ namespace AIStudio.Lambda
             "https://raw.githubusercontent.com/TheWiselyBearded/ai-studio/main/cloud/bootstrap.sh";
         private const string DefaultBundleUrl =
             "https://github.com/TheWiselyBearded/ai-studio/releases/latest/download/ai-studio-light.zip";
-        private const string FileSystemMount = "/lambda-fs/ai-studio-models";
+        // Lambda mounts persistent filesystems at /lambda/nfs/<fs-name> (virtiofs).
+        // The previous value "/lambda-fs/ai-studio-models" was wrong on both axes —
+        // wrong path convention AND hardcoded a name that excluded the region suffix
+        // we actually use (ai-studio-models-<region>).
+        private const string FileSystemMountRoot = "/lambda/nfs/";
 
         // --- Remote state (refreshed from Lambda) ---
         private List<LambdaClient.InstanceType> _instanceTypes = new List<LambdaClient.InstanceType>();
@@ -448,7 +452,7 @@ namespace AIStudio.Lambda
                 var token = GenerateToken();
 
                 // 2. Render user_data.
-                var userData = RenderUserData(token, fileSystem != null);
+                var userData = RenderUserData(token, fileSystem?.Name);
 
                 // 3. Persist settings so Unity survives restarts.
                 AIStudioSettings.SshKeyName = sshKey.Name;
@@ -593,20 +597,25 @@ namespace AIStudio.Lambda
             return BitConverter.ToString(bytes).Replace("-", string.Empty).ToLowerInvariant();
         }
 
-        private string RenderUserData(string token, bool hasFs)
+        private string RenderUserData(string token, string fileSystemName)
         {
             // The shell template substitution is done in C# because we can't rely
             // on the user having a POSIX `envsubst` at hand.
             var template = UserDataTemplate;
             var gemini = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? string.Empty;
             var runway = Environment.GetEnvironmentVariable("RUNWAYML_API_SECRET") ?? string.Empty;
+            var hfToken = AIStudioSettings.HuggingFaceToken;
+            var fsMount = string.IsNullOrEmpty(fileSystemName)
+                ? "/opt/ai-studio-models"
+                : FileSystemMountRoot + fileSystemName;
             return template
                 .Replace("{{AI_STUDIO_TOKEN}}", token)
-                .Replace("{{FS_MOUNT}}", hasFs ? FileSystemMount : "/opt/ai-studio-models")
+                .Replace("{{FS_MOUNT}}", fsMount)
                 .Replace("{{AI_STUDIO_BUNDLE_URL}}", _bundleUrl ?? string.Empty)
                 .Replace("{{BOOTSTRAP_URL}}", _bootstrapUrl ?? string.Empty)
                 .Replace("{{GEMINI_API_KEY}}", gemini)
                 .Replace("{{RUNWAYML_API_SECRET}}", runway)
+                .Replace("{{HF_TOKEN}}", hfToken)
                 .Replace("{{SKIP_TRELLIS}}", _skipTrellis ? "1" : "0");
         }
 
@@ -621,6 +630,7 @@ export FS_MOUNT=""{{FS_MOUNT}}""
 export AI_STUDIO_BUNDLE_URL=""{{AI_STUDIO_BUNDLE_URL}}""
 export GEMINI_API_KEY=""{{GEMINI_API_KEY}}""
 export RUNWAYML_API_SECRET=""{{RUNWAYML_API_SECRET}}""
+export HF_TOKEN=""{{HF_TOKEN}}""
 export SKIP_TRELLIS=""{{SKIP_TRELLIS}}""
 
 curl -fsSL ""{{BOOTSTRAP_URL}}"" -o /tmp/bootstrap.sh
@@ -642,6 +652,7 @@ exec > /var/log/ai-studio-fs-init-user-data.log 2>&1
 export FS_MOUNT=""{{FS_MOUNT}}""
 export LAMBDA_API_KEY=""{{LAMBDA_API_KEY}}""
 export LAMBDA_INSTANCE_ID=""$(curl -fsS http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo unknown)""
+export HF_TOKEN=""{{HF_TOKEN}}""
 
 curl -fsSL ""{{FS_INIT_URL}}"" -o /tmp/fs_init.sh
 chmod +x /tmp/fs_init.sh
@@ -677,7 +688,8 @@ bash /tmp/fs_init.sh
                 var userData = FsInitUserDataTemplate
                     .Replace("{{FS_MOUNT}}", "/lambda-fs/" + fsName)
                     .Replace("{{FS_INIT_URL}}", FsInitScriptUrl)
-                    .Replace("{{LAMBDA_API_KEY}}", AIStudioSettings.LambdaApiKey);
+                    .Replace("{{LAMBDA_API_KEY}}", AIStudioSettings.LambdaApiKey)
+                    .Replace("{{HF_TOKEN}}", AIStudioSettings.HuggingFaceToken);
 
                 var req = new LambdaClient.LaunchRequest
                 {

@@ -10,7 +10,7 @@ using UnityEngine;
 namespace AIStudio.Mcp
 {
     /// MCP tool wrapping the Hunyuan 3D 2.1 PBR ComfyUI pipeline.
-    /// Mirrors Hunyuan3DGeneratorWindow's multipart request against /generate/3d.
+    /// Mirrors Generate3DWindow's multipart request against /generate/3d.
     public static class AIStudioMcpHunyuan3D
     {
         public class GenerateHunyuan3DParams

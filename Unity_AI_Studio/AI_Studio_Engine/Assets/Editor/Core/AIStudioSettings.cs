@@ -23,9 +23,12 @@ namespace AIStudio.Core
         private const string KeySshKeyName = PrefPrefix + "SshKeyName";
         private const string KeySshPrivateKeyPath = PrefPrefix + "SshPrivateKeyPath";
         private const string KeyMaxSessionCost = PrefPrefix + "MaxSessionCostUsd";
+        private const string KeyMaxSessionHours = PrefPrefix + "MaxSessionHours";
+        private const string KeyHfToken = PrefPrefix + "HfToken";
 
         public const string DefaultLocalBaseUrl = "http://127.0.0.1:5001";
         public const float DefaultMaxSessionCostUsd = 5.0f;
+        public const float DefaultMaxSessionHours = 15.0f;
 
         public static event Action Changed;
 
@@ -84,10 +87,32 @@ namespace AIStudio.Core
             set { EditorPrefs.SetString(KeySshPrivateKeyPath, value ?? string.Empty); Changed?.Invoke(); }
         }
 
+        // HF_TOKEN: threaded through user_data so gated models (DINOv3, BiRefNet,
+        // some Llama weights) auto-fetch on the instance. Falls back to the
+        // editor process env var if the EditorPref is empty.
+        public static string HuggingFaceToken
+        {
+            get
+            {
+                var pref = EditorPrefs.GetString(KeyHfToken, string.Empty);
+                if (!string.IsNullOrEmpty(pref)) return pref;
+                return System.Environment.GetEnvironmentVariable("HF_TOKEN")
+                       ?? System.Environment.GetEnvironmentVariable("HUGGINGFACE_HUB_TOKEN")
+                       ?? string.Empty;
+            }
+            set { EditorPrefs.SetString(KeyHfToken, value ?? string.Empty); Changed?.Invoke(); }
+        }
+
         public static float MaxSessionCostUsd
         {
             get => EditorPrefs.GetFloat(KeyMaxSessionCost, DefaultMaxSessionCostUsd);
             set { EditorPrefs.SetFloat(KeyMaxSessionCost, value); Changed?.Invoke(); }
+        }
+
+        public static float MaxSessionHours
+        {
+            get => EditorPrefs.GetFloat(KeyMaxSessionHours, DefaultMaxSessionHours);
+            set { EditorPrefs.SetFloat(KeyMaxSessionHours, Mathf.Max(0f, value)); Changed?.Invoke(); }
         }
 
         public static string ActiveBaseUrl

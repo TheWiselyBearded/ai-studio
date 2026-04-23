@@ -7,6 +7,7 @@ public class AIStudioSettingsWindow : EditorWindow
     private Vector2 _scroll;
     private bool _showApiKey;
     private bool _showAuthToken;
+    private bool _showHfToken;
 
     [MenuItem("AI Studio/Settings")]
     public static void ShowWindow()
@@ -87,13 +88,36 @@ public class AIStudioSettingsWindow : EditorWindow
             EditorStyles.miniLabel);
         EditorGUILayout.Space(10);
 
+        // --- Hugging Face ---
+        EditorGUILayout.LabelField("Hugging Face", EditorStyles.boldLabel);
+        EditorGUILayout.BeginHorizontal();
+        var hfLabel = _showHfToken ? "HF Token" : "HF Token (hidden)";
+        var hf = _showHfToken
+            ? EditorGUILayout.TextField(hfLabel, AIStudioSettings.HuggingFaceToken)
+            : EditorGUILayout.PasswordField(hfLabel, AIStudioSettings.HuggingFaceToken);
+        if (hf != AIStudioSettings.HuggingFaceToken) AIStudioSettings.HuggingFaceToken = hf;
+        if (GUILayout.Button(_showHfToken ? "Hide" : "Show", GUILayout.Width(60)))
+            _showHfToken = !_showHfToken;
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.LabelField(
+            "Threaded into user_data so gated models (DINOv3 for Trellis2, BiRefNet) auto-fetch on the instance. Get one at huggingface.co/settings/tokens with 'Read' scope.",
+            EditorStyles.miniLabel);
+        EditorGUILayout.Space(10);
+
         EditorGUILayout.Space(8);
-        EditorGUILayout.LabelField("Cost Guardrails", EditorStyles.boldLabel);
-        var maxCost = EditorGUILayout.FloatField("Max Session Cost (USD)", AIStudioSettings.MaxSessionCostUsd);
+        EditorGUILayout.LabelField("Session Guardrails", EditorStyles.boldLabel);
+        var maxHours = EditorGUILayout.FloatField("Max Session Hours", AIStudioSettings.MaxSessionHours);
+        if (Mathf.Abs(maxHours - AIStudioSettings.MaxSessionHours) > 0.001f)
+            AIStudioSettings.MaxSessionHours = Mathf.Max(0f, maxHours);
+        EditorGUILayout.LabelField(
+            "When uptime exceeds this, Unity pops a terminate dialog. 0 disables the check.",
+            EditorStyles.miniLabel);
+
+        var maxCost = EditorGUILayout.FloatField("Max Session Cost (USD, optional)", AIStudioSettings.MaxSessionCostUsd);
         if (Mathf.Abs(maxCost - AIStudioSettings.MaxSessionCostUsd) > 0.001f)
             AIStudioSettings.MaxSessionCostUsd = Mathf.Max(0f, maxCost);
         EditorGUILayout.LabelField(
-            "When running-instance cost exceeds this, Unity pops a terminate dialog.",
+            "Secondary dollar cap — trips whichever limit is reached first. 0 disables it.",
             EditorStyles.miniLabel);
         EditorGUILayout.Space(10);
 

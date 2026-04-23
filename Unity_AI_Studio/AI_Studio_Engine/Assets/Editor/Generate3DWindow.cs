@@ -7,89 +7,84 @@ using System.Threading.Tasks;
 using AIStudio.Core;
 
 /// <summary>
-/// Editor window for generating 3D assets via the Hunyuan3D 2.1 PBR ComfyUI pipeline.
-/// Sends a single image to the run_comfy_server.py Flask API and imports the resulting GLB.
+/// Unified 3D generator window. Pick a provider (Hunyuan 2.1 PBR or Trellis2)
+/// from the dropdown, drop or browse to a reference image, and submit.
+/// Uses the async-job pattern (submit -> poll -> download) so first-run model
+/// loads don't hit Cloudflare's 100s tunnel timeout.
 /// </summary>
-public class Hunyuan3DGeneratorWindow : EditorWindow
+public class Generate3DWindow : EditorWindow
 {
-    // --- Configuration ---
-    // Hunyuan3D's first-run cold-load (7 GB dit + VAE decode + postprocess +
-    // paintPBR) routinely exceeds Cloudflare's 100 s edge timeout, so we use
-    // the async job system instead of the synchronous /generate/3d endpoint.
-    private const string SubmitPath = "/jobs/submit/3d";
+    private enum Provider { Hunyuan, Trellis }
+
+    private Provider _provider = Provider.Hunyuan;
+
     private string _outputFolder = "Assets/Generated3D";
     private string _currentJobId;
     private bool _cancelRequested;
 
-    // --- Image slot ---
     private string _imagePath;
     private Texture2D _preview;
 
-    // --- State ---
     private bool _isGenerating;
     private string _statusMessage = "";
     private MessageType _statusType = MessageType.None;
     private float _progress;
     private Vector2 _scrollPos;
 
-    [MenuItem("AI Studio/Hunyuan 3D Generator")]
+    [MenuItem("AI Studio/3D Generator")]
     public static void ShowWindow()
     {
-        var window = GetWindow<Hunyuan3DGeneratorWindow>("3D Generator");
-        window.minSize = new Vector2(420, 400);
+        var window = GetWindow<Generate3DWindow>("3D Generator");
+        window.minSize = new Vector2(420, 440);
     }
+
+    private string SubmitPath => _provider == Provider.Trellis ? "/jobs/submit/trellis" : "/jobs/submit/3d";
+    private string LogService => _provider == Provider.Trellis ? "trellis" : "hunyuan";
 
     private void OnGUI()
     {
         _scrollPos = EditorGUILayout.BeginScrollView(_scrollPos);
 
-        // --- Header ---
         EditorGUILayout.Space(6);
-        EditorGUILayout.LabelField("Hunyuan 3D Asset Generator", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("3D Asset Generator", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox(
-            "Upload a single image to generate a textured 3D model with PBR materials.",
+            "Select a provider and drop an image to generate a 3D model.\n" +
+            "• Hunyuan 2.1 PBR — textured mesh with PBR materials.\n" +
+            "• Trellis2 — fast mesh-from-image (image must have a clear subject; alpha is respected).",
             MessageType.Info);
         EditorGUILayout.Space(4);
 
-        // --- Settings ---
         EditorGUILayout.LabelField("Settings", EditorStyles.boldLabel);
+        EditorGUI.BeginDisabledGroup(_isGenerating);
+        _provider = (Provider)EditorGUILayout.EnumPopup("Provider", _provider);
+        EditorGUI.EndDisabledGroup();
+
         EditorGUILayout.LabelField("Endpoint", $"{AIStudioSettings.ActiveMode} · {AIStudioSettings.ActiveBaseUrl}{SubmitPath}");
         _outputFolder = EditorGUILayout.TextField("Output Folder", _outputFolder);
         EditorGUILayout.Space(8);
 
-        // --- Image Slot ---
         EditorGUILayout.LabelField("Reference Image", EditorStyles.boldLabel);
         EditorGUILayout.Space(2);
-
         EditorGUILayout.BeginVertical(EditorStyles.helpBox, GUILayout.Height(200));
-
         if (_preview != null)
         {
-            // Show preview + filename + remove button
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("X", GUILayout.Width(20), GUILayout.Height(18)))
-            {
                 ClearImage();
-            }
             EditorGUILayout.EndHorizontal();
 
             var previewRect = GUILayoutUtility.GetRect(200, 140, GUILayout.ExpandWidth(true));
             GUI.DrawTexture(previewRect, _preview, ScaleMode.ScaleToFit);
-
-            string filename = Path.GetFileName(_imagePath);
-            EditorGUILayout.LabelField(filename, EditorStyles.centeredGreyMiniLabel);
+            EditorGUILayout.LabelField(Path.GetFileName(_imagePath), EditorStyles.centeredGreyMiniLabel);
         }
         else
         {
-            // Browse button + drag-and-drop
             GUILayout.FlexibleSpace();
             EditorGUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("Browse...", GUILayout.Width(120), GUILayout.Height(32)))
-            {
                 BrowseImage();
-            }
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.LabelField("or drag & drop an image here", EditorStyles.centeredGreyMiniLabel);
@@ -98,12 +93,10 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
             var dropArea = GUILayoutUtility.GetLastRect();
             HandleDragDrop(dropArea);
         }
-
         EditorGUILayout.EndVertical();
 
         EditorGUILayout.Space(8);
 
-        // --- Generate Button ---
         bool canGenerate = !_isGenerating && !string.IsNullOrEmpty(_imagePath);
         EditorGUI.BeginDisabledGroup(!canGenerate);
         var generateStyle = new GUIStyle(GUI.skin.button)
@@ -112,18 +105,22 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
             fontStyle = FontStyle.Bold,
             fixedHeight = 36
         };
-        if (GUILayout.Button(_isGenerating ? "Generating..." : "Generate 3D Model", generateStyle))
-        {
+        string buttonLabel = _isGenerating
+            ? "Generating..."
+            : $"Generate with {_provider}";
+        if (GUILayout.Button(buttonLabel, generateStyle))
             RunGeneration();
-        }
         EditorGUI.EndDisabledGroup();
 
-        // --- Progress / Status ---
         if (_isGenerating)
         {
             EditorGUILayout.Space(4);
             var rect = EditorGUILayout.GetControlRect(false, 20);
             EditorGUI.ProgressBar(rect, _progress, "Processing...");
+
+            EditorGUILayout.Space(2);
+            if (GUILayout.Button("Cancel", GUILayout.Height(22)))
+                _cancelRequested = true;
         }
 
         if (!string.IsNullOrEmpty(_statusMessage))
@@ -139,18 +136,14 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
     {
         string path = EditorUtility.OpenFilePanel(
             "Select Reference Image", "", "png,jpg,jpeg,bmp,tga,tiff");
-
         if (!string.IsNullOrEmpty(path))
-        {
             SetImage(path);
-        }
     }
 
     private void HandleDragDrop(Rect dropArea)
     {
         Event evt = Event.current;
         if (!dropArea.Contains(evt.mousePosition)) return;
-
         if (evt.type == EventType.DragUpdated)
         {
             DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
@@ -160,9 +153,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         {
             DragAndDrop.AcceptDrag();
             if (DragAndDrop.paths.Length > 0)
-            {
                 SetImage(DragAndDrop.paths[0]);
-            }
             evt.Use();
         }
     }
@@ -170,12 +161,10 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
     private void SetImage(string path)
     {
         _imagePath = path;
-
         byte[] bytes = File.ReadAllBytes(path);
         var tex = new Texture2D(2, 2);
         tex.LoadImage(bytes);
         _preview = tex;
-
         Repaint();
     }
 
@@ -190,20 +179,23 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         Repaint();
     }
 
-    // --- Generation (async job pattern, mirrors VideoGeneratorWindow) ---
     private async void RunGeneration()
     {
         _isGenerating = true;
         _cancelRequested = false;
         _currentJobId = null;
-        _statusMessage = "Submitting 3D generation job...";
+        _statusMessage = $"Submitting {_provider} 3D job...";
         _statusType = MessageType.Info;
         _progress = 0.05f;
         Repaint();
 
+        var submitPath = SubmitPath;
+        var logService = LogService;
+        var providerLabel = _provider.ToString();
+
         try
         {
-            string jobId = await SubmitJobAsync();
+            string jobId = await SubmitJobAsync(submitPath);
             _currentJobId = jobId;
             _progress = 0.1f;
             _statusMessage = $"Job submitted ({jobId.Substring(0, Math.Min(8, jobId.Length))}...). Generating mesh...";
@@ -224,10 +216,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
                 }
                 if (st.status == "error" || st.status == "cancelled")
                 {
-                    // Fetch the last 60 lines of the hunyuan log so the full
-                    // Python traceback ends up in the Unity console even when
-                    // the /jobs/status response only carries the short summary.
-                    await TryFetchAndLogHunyuanTailAsync();
+                    await TryFetchAndLogTailAsync(logService, providerLabel);
                     var detail = string.IsNullOrEmpty(st.error) ? "(no detail)" : st.error;
                     throw new Exception($"Job {st.status}: {detail}");
                 }
@@ -244,7 +233,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
                 return;
             }
 
-            string resultPath = await DownloadJobResultAsync(jobId);
+            string resultPath = await DownloadJobResultAsync(jobId, providerLabel);
             _progress = 1f;
             _statusMessage = $"3D model imported: {resultPath}";
             _statusType = MessageType.Info;
@@ -261,7 +250,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         {
             _statusMessage = $"Error: {ex.Message}";
             _statusType = MessageType.Error;
-            Debug.LogError($"[3D Generator] {ex}");
+            Debug.LogError($"[3D Generator/{providerLabel}] {ex}");
         }
         finally
         {
@@ -272,7 +261,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         }
     }
 
-    private async Task<string> SubmitJobAsync()
+    private async Task<string> SubmitJobAsync(string submitPath)
     {
         var form = new MultipartFormDataContent();
         byte[] fileBytes = File.ReadAllBytes(_imagePath);
@@ -280,9 +269,9 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         form.Add(fileContent, "image", Path.GetFileName(_imagePath));
 
-        string url = AIStudioSettings.BuildUrl(SubmitPath);
+        string url = AIStudioSettings.BuildUrl(submitPath);
         Debug.Log($"[3D Generator] Submitting job to {url}...");
-        using var request = AIStudioClient.CreateRequest(HttpMethod.Post, SubmitPath);
+        using var request = AIStudioClient.CreateRequest(HttpMethod.Post, submitPath);
         request.Content = form;
         using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromMinutes(2));
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
@@ -305,25 +294,26 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         return JsonUtility.FromJson<JobStatusResponse>(body);
     }
 
-    /// Pull the last 60 lines of the Hunyuan ComfyUI log and dump as a
-    /// Debug.LogError. Async-job failures only give us status=error; this
-    /// gives the actual Python traceback without needing SSH.
-    private async Task TryFetchAndLogHunyuanTailAsync()
+    // Log tail on failure: async-job errors only carry a short summary; the
+    // real Python traceback lives in comfy-{hunyuan,trellis}.log on the
+    // instance. Pull 60 lines into the Unity console so the user doesn't need
+    // SSH to debug a failure.
+    private async Task TryFetchAndLogTailAsync(string service, string providerLabel)
     {
         try
         {
-            using var request = AIStudioClient.CreateRequest(HttpMethod.Get, "/logs/hunyuan?lines=60");
+            using var request = AIStudioClient.CreateRequest(HttpMethod.Get, $"/logs/{service}?lines=60");
             using var cts = AIStudioClient.TimeoutCts(TimeSpan.FromSeconds(15));
             var resp = await AIStudioClient.Http.SendAsync(request, cts.Token);
             if (!resp.IsSuccessStatusCode) return;
             var text = await resp.Content.ReadAsStringAsync();
             if (!string.IsNullOrEmpty(text))
-                Debug.LogError($"[3D Generator] comfy-hunyuan log tail:\n{text}");
+                Debug.LogError($"[3D Generator/{providerLabel}] comfy-{service} log tail:\n{text}");
         }
         catch { /* best-effort */ }
     }
 
-    private async Task<string> DownloadJobResultAsync(string jobId)
+    private async Task<string> DownloadJobResultAsync(string jobId, string providerLabel)
     {
         string fullOutputDir = Path.Combine(Application.dataPath,
             _outputFolder.StartsWith("Assets/") ? _outputFolder.Substring(7) : _outputFolder);
@@ -335,7 +325,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         HttpResponseMessage response = await AIStudioClient.Http.SendAsync(request, cts.Token);
         await AIStudioClient.EnsureSuccessAsync(response, "3D Generator (download)");
 
-        string outputName = "generated_model.glb";
+        string outputName = $"{providerLabel.ToLowerInvariant()}_model.glb";
         if (response.Content.Headers.ContentDisposition?.FileName != null)
             outputName = response.Content.Headers.ContentDisposition.FileName.Trim('"');
 
@@ -355,7 +345,7 @@ public class Hunyuan3DGeneratorWindow : EditorWindow
         }
 
         File.WriteAllBytes(savePath, glbBytes);
-        Debug.Log($"[3D Generator] Saved {glbBytes.Length} bytes to {savePath}");
+        Debug.Log($"[3D Generator/{providerLabel}] Saved {glbBytes.Length} bytes to {savePath}");
         return "Assets" + savePath.Substring(Application.dataPath.Length).Replace('\\', '/');
     }
 

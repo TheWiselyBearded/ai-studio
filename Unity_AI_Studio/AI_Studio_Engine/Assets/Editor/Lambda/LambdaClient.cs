@@ -239,11 +239,17 @@ namespace AIStudio.Lambda
 
         public static async Task<FileSystem> CreateFileSystemAsync(string name, string regionName, CancellationToken ct = default)
         {
-            using var req = Build(HttpMethod.Post, "/file-systems");
+            // Lambda's REST API uses /file-systems for GET (list) but the
+            // create endpoint lives at /filesystems (no dash). Documented
+            // poorly; confirmed by probing OPTIONS — /file-systems only
+            // allows GET/HEAD/OPTIONS, while /filesystems returns "Allow:
+            // POST, OPTIONS". The payload uses a flat region string, not a
+            // nested {name: "..."} object as GET returns.
+            using var req = Build(HttpMethod.Post, "/filesystems");
             var payload = new Dictionary<string, object>
             {
                 ["name"] = name,
-                ["region"] = new Dictionary<string, object> { ["name"] = regionName },
+                ["region"] = regionName,
             };
             req.Content = new StringContent(JsonConvert.SerializeObject(payload), Encoding.UTF8, "application/json");
             var obj = await SendAsync(req, ct);
