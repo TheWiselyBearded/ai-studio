@@ -129,20 +129,11 @@
       "use_tiled_decoder": true
     }
   },
-  "193": {
-    "class_type": "Trellis2FillHolesWithMeshlib",
-    "inputs": {
-      "mesh": [
-        "217",
-        0
-      ]
-    }
-  },
   "161": {
     "class_type": "Trellis2ReconstructMeshWithQuad",
     "inputs": {
       "mesh": [
-        "193",
+        "217",
         0
       ],
       "remesh_band": 1,
