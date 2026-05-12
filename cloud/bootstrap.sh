@@ -184,7 +184,11 @@ install_comfy_main() {
   run_as_user "'$env_py' -m pip install -U --pre comfyui-manager"
 
   # AI Studio Flask server runtime deps (not part of ComfyUI's requirements).
-  run_as_user "'$env_py' -m pip install flask websocket-client python-dotenv requests"
+  # rembg[gpu] is for run_comfy_server.py's ensure_rgba_for_trellis() — the
+  # Trellis2 pipeline needs an RGBA image with a subject mask, and ships no
+  # background-removal node of its own. The server runs in this env, so this
+  # is where rembg has to live.
+  run_as_user "'$env_py' -m pip install flask websocket-client python-dotenv requests 'rembg[gpu]'"
 
   # Setup Guide Phase 4: QwenTTS custom node.
   local qwen_dir="$comfy_dir/custom_nodes/ComfyUI-QwenTTS"

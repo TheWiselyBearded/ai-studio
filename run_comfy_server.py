@@ -308,6 +308,48 @@ def generate_3d(image_path):
     return output_path
 
 
+def ensure_rgba_for_trellis(image_path):
+    """Trellis2's PreProcessImage node reads alpha via output_np[:, :, 3] and
+    raises IndexError on any RGB (3-channel) image. The pipeline ships no
+    background-removal node — the alpha channel must be a real subject mask
+    against transparency, not just RGBA-with-opaque-alpha.
+
+    If the image already has meaningful alpha, return it unchanged. Otherwise
+    run rembg to background-remove and return the path to a new RGBA PNG next
+    to the source. Imported lazily so the Flask server still imports cleanly
+    on a box that hasn't installed rembg yet (it'll fail at first Trellis job
+    with a clear error instead of at startup).
+    """
+    from PIL import Image
+    import numpy as np
+    img = Image.open(image_path)
+    if img.mode == "RGBA":
+        alpha = np.array(img.split()[-1])
+        # Treat alpha as "real" if any pixel is below ~98% opaque. Pure
+        # opaque alpha (all 255) means the user pasted an RGB inside an RGBA
+        # container — still no mask, still crashes Trellis.
+        if alpha.min() < 250:
+            return image_path
+    print(f"[Trellis] Input image is {img.mode} (no usable alpha) — running rembg")
+    try:
+        from rembg import remove, new_session
+    except ImportError as e:
+        raise RuntimeError(
+            "Trellis needs an RGBA image with a subject mask. rembg is not "
+            "installed in the Flask server's env, so we can't auto-remove the "
+            "background. Either install it (`pip install 'rembg[gpu]'`) or "
+            "upload a PNG with transparency."
+        ) from e
+    session = new_session(model_name="u2net")
+    with open(image_path, "rb") as f:
+        rgba_bytes = remove(f.read(), session=session)
+    out_path = os.path.splitext(image_path)[0] + ".rgba.png"
+    with open(out_path, "wb") as f:
+        f.write(rgba_bytes)
+    print(f"[Trellis] Background removed → {os.path.basename(out_path)}")
+    return out_path
+
+
 def generate_trellis_3d(image_path):
     """Run the ComfyUI-Trellis2 MeshOnly pipeline on a single image and return the saved GLB path.
 
@@ -319,11 +361,10 @@ def generate_trellis_3d(image_path):
     """
     import glob
     target = server_address_trellis
-    # Trellis2LoadImageWithTransparency expects an RGBA source; the
-    # Trellis2PreProcessImage node reads alpha via output_np[:, :, 3] and
-    # crashes with IndexError on a 3-channel RGB. ensure_rgb_image would
-    # strip alpha, so we skip it here and let ComfyUI's /upload/image take
-    # the file as-is (PNG with alpha is the preferred format).
+    # Trellis2 needs an RGBA image where alpha is the subject mask. RGB inputs
+    # crash Trellis2PreProcessImage at output_np[:, :, 3]. ensure_rgba_for_trellis
+    # passes through real-alpha images and rembg's any plain RGB into RGBA.
+    image_path = ensure_rgba_for_trellis(image_path)
 
     with open(os.path.join(SCRIPT_DIR, WORKFLOW_TRELLIS_FILE), "r", encoding="utf-8") as f:
         workflow = json.load(f)
