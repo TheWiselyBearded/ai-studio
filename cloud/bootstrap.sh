@@ -318,6 +318,16 @@ install_comfy_trellis() {
   echo "--- [comfy_trellis] (Linux equivalent of Setup Guide Part 4) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
+  # The prebuilt Trellis2 wheels (cumesh, custom_rasterizer, o_voxel) were
+  # compiled on a newer toolchain (gcc 13+) and link against libstdc++ symbols
+  # like GLIBCXX_3.4.31 that Ubuntu 22.04's system libstdc++.so.6.0.30 does
+  # NOT export. Without this, cumesh._C fails to import at service start with:
+  #   ImportError: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.31'
+  #   not found (required by .../cumesh/_C.cpython-312-x86_64-linux-gnu.so)
+  # conda-forge's libstdcxx-ng ships libstdc++.so.6.0.34 inside the env; the
+  # systemd unit below sets LD_LIBRARY_PATH so this is preferred at load time.
+  run_as_user "'$MINIFORGE_DIR/bin/conda' install -y -n $env_name -c conda-forge libstdcxx-ng"
+
   # Torch pin: the Linux Trellis2 wheels ship in two subdirs with different
   # GPU arch targets:
   #   wheels/Linux/Torch270/ — SASS for sm_80/86/89/90 (broad Ampere+Hopper)
@@ -593,6 +603,11 @@ Type=simple
 User=$AISTUDIO_USER
 EnvironmentFile=/etc/ai-studio/.env
 Environment=PYTHONUNBUFFERED=1
+# Make conda-forge's libstdc++.so.6.0.34+ (from libstdcxx-ng) win over the
+# system's 6.0.30. Required so the prebuilt Trellis2 cumesh/_C.so finds
+# GLIBCXX_3.4.31. Without this the ComfyUI-Trellis2 custom node fails to
+# import and Trellis2ImageCondGenerator never registers.
+Environment=LD_LIBRARY_PATH=$MINIFORGE_DIR/envs/comfy_trellis/lib
 WorkingDirectory=$TOOLS_DIR/ComfyUI_Trellis
 ExecStart=$MINIFORGE_DIR/envs/comfy_trellis/bin/python main.py --port 8002 --listen 127.0.0.1
 Restart=on-failure
