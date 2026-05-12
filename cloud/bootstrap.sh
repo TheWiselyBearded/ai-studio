@@ -14,7 +14,7 @@
 #   RUNWAYML_API_SECRET       forwarded to /etc/ai-studio/.env for Runway video provider
 #   SKIP_TRELLIS              if "1", skip the comfy_trellis env (Python 3.11 / CU128)
 
-set -uo pipefail
+set -euo pipefail
 exec > >(tee -a /var/log/ai-studio-bootstrap.log) 2>&1
 
 STATE_DIR="/var/ai-studio"
@@ -99,9 +99,23 @@ create_env() {
   if run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda env list | grep -qE '^\s*$name\s'"; then
     echo "  [env] $name already exists, skipping create"
   else
-    echo "  [env] creating $name (python=$pyver)"
-    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda create -y -n $name python=$pyver"
+    echo "  [env] creating $name (python=$pyver, pip)"
+    # `pip` is listed explicitly because some miniforge releases ship envs
+    # without it — historically that caused every downstream `pip install` to
+    # silently fall through to system /usr/bin/pip3, which then hit "site-packages
+    # not writeable" and dumped everything into ~/.local/lib (invisible to systemd).
+    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda create -y -n $name python=$pyver pip"
   fi
+  # Sanity: the env MUST have its own python AND that python MUST resolve `-m pip`
+  # to a pip living inside the env. If either is false, every subsequent install
+  # would land somewhere systemd can't see. Fail loud now, not at first service crash.
+  local env_py="$MINIFORGE_DIR/envs/$name/bin/python"
+  [ -x "$env_py" ] || { echo "[bootstrap] FATAL: $env_py missing after create"; exit 1; }
+  local pip_origin
+  pip_origin="$(run_as_user "'$env_py' -m pip --version" 2>&1 || true)"
+  echo "  [env] $name pip: $pip_origin"
+  echo "$pip_origin" | grep -q "$MINIFORGE_DIR/envs/$name" \
+    || { echo "[bootstrap] FATAL: $env_py -m pip resolves OUTSIDE the env: $pip_origin"; exit 1; }
 }
 
 phase_envs() {
@@ -131,57 +145,57 @@ clone_or_update() {
 
 install_comfy_main() {
   local env_name="comfy_main"
+  local env_py="$MINIFORGE_DIR/envs/$env_name/bin/python"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Main"
   echo "--- [comfy_main] (mirrors Dual-Environment Setup Guide, Part 3) ---"
   mkdir -p "$TOOLS_DIR"
   chown -R "$AISTUDIO_USER:$AISTUDIO_USER" "$TOOLS_DIR"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
+  # All pip calls below invoke the env's python directly (`$env_py -m pip ...`)
+  # rather than `conda activate $env_name && pip ...`. The latter quietly
+  # resolved to /usr/bin/pip3 whenever conda's activate hook didn't fire under
+  # `sudo -u ubuntu bash -lc`, dumping every install into ~/.local/lib instead
+  # of the env's site-packages — invisible to systemd, services crash-loop.
+
   # Install the CU121 torch stack from PyTorch's own index (this is what the
   # Setup Guide's Windows conda command resolves to — `pytorch-cuda=12.1` on
   # conda-forge Linux currently degrades to a CPU build, so we go direct).
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-        --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install -r '$comfy_dir/requirements.txt'"
+  run_as_user "'$env_py' -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu121"
+  run_as_user "'$env_py' -m pip install -r '$comfy_dir/requirements.txt'"
 
   # Setup Guide Phase 2: native comfyui-manager (V2 UI).
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install -U --pre comfyui-manager"
+  run_as_user "'$env_py' -m pip install -U --pre comfyui-manager"
 
   # AI Studio Flask server runtime deps (not part of ComfyUI's requirements).
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install flask websocket-client python-dotenv requests"
+  run_as_user "'$env_py' -m pip install flask websocket-client python-dotenv requests"
 
   # Setup Guide Phase 4: QwenTTS custom node.
   local qwen_dir="$comfy_dir/custom_nodes/ComfyUI-QwenTTS"
   clone_or_update https://github.com/1038lab/ComfyUI-QwenTTS.git "$qwen_dir"
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install -r '$qwen_dir/requirements.txt' && \
-    pip install sox onnxruntime librosa soundfile"
+  run_as_user "'$env_py' -m pip install -r '$qwen_dir/requirements.txt'"
+  run_as_user "'$env_py' -m pip install sox onnxruntime librosa soundfile"
 
   # Setup Guide Phase 5 — Hotfix 1 "CUDA Wipeout": QwenTTS requirements.txt
   # asks for torch>=2.9.1 and silently upgrades torch to a PyPI wheel that
   # either downgrades to CPU or links libcudart.so.13. Remediation from the
   # Guide: uninstall torch and reinstall the CU121 GPU wheels. `--force-reinstall`
   # guarantees we override whatever version the previous step landed on.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip uninstall -y torch torchvision torchaudio && \
-    pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+  run_as_user "'$env_py' -m pip uninstall -y torch torchvision torchaudio"
+  run_as_user "'$env_py' -m pip install --force-reinstall torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu121"
 
   # Drop any stray nvidia-*-cu13 wheels that transitive deps pulled in (onnxruntime-gpu,
   # newer toolchain wheels, etc.). They get loaded before the cu12 ones in dlopen
   # order and trip CUDNN_STATUS_NOT_INITIALIZED against the cu121 torch.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+  run_as_user "'$env_py' -m pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r '$env_py' -m pip uninstall -y" || true
 
   # Setup Guide Phase 5 — Hotfix 4: transformers 5.x drops 'default' RoPE key.
   # Also re-pin huggingface-hub into the 0.x series — transformers 4.57.3
   # imports fail with `huggingface-hub>=0.34.0,<1.0 is required` if a prior
   # install (diffusers, hf_hub_download extras, etc.) upgraded hub past 1.0.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
+  run_as_user "'$env_py' -m pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
 
   # Setup Guide Phase 5 — Hotfix 2: @check_model_inputs decorator incompatibility.
   # -E + ^(\s*) prefix so indented decorators inside class bodies match too.
@@ -207,16 +221,16 @@ install_comfy_main() {
 
 install_comfy_hunyuan() {
   local env_name="comfy_hunyuan"
+  local env_py="$MINIFORGE_DIR/envs/$env_name/bin/python"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Hunyuan"
   echo "--- [comfy_hunyuan] (mirrors Dual-Environment Setup Guide, Part 2) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
 
   # Pin CU121 torch stack via PyTorch's index (Setup Guide intent; conda-forge
   # Linux doesn't ship pytorch-cuda=12.1 the way the Windows Guide assumes).
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-        --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install -r '$comfy_dir/requirements.txt'"
+  run_as_user "'$env_py' -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu121"
+  run_as_user "'$env_py' -m pip install -r '$comfy_dir/requirements.txt'"
 
   clone_or_update https://github.com/ltdrdata/ComfyUI-Manager.git "$comfy_dir/custom_nodes/ComfyUI-Manager"
 
@@ -227,36 +241,33 @@ install_comfy_hunyuan() {
   # Batch 4 "Hardware", Batch 5 "Build Isolation Bypass". One pip call is equivalent
   # but we split into two so `--no-build-isolation` only applies to the two packages
   # that actually need it.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install trimesh pyhocon addict hydra-core loguru diffusers hydra-zen \
+  run_as_user "'$env_py' -m pip install trimesh pyhocon addict hydra-core loguru diffusers hydra-zen \
                 scikit-image plyfile pymeshlab pytorch-lightning \
                 opencv-python-headless onnxruntime-gpu 'rembg[gpu]' ninja \
                 xatlas yacs pytorch-msssim pygltflib timm torchtyping meshlib ffmpeg-python \
-                accelerate pybind11 && \
-    pip install git+https://github.com/NVlabs/nvdiffrast/ --no-build-isolation && \
-    pip install torch-scatter --no-build-isolation"
+                accelerate pybind11"
+  run_as_user "'$env_py' -m pip install git+https://github.com/NVlabs/nvdiffrast/ --no-build-isolation"
+  run_as_user "'$env_py' -m pip install torch-scatter --no-build-isolation"
 
   # Drop any stray nvidia-*-cu13 packages (onnxruntime-gpu + other deps can
   # pull them in). conda's pytorch-cuda=12.1 lock prevents this at the
   # meta-package level, but transitive wheels can still slip through.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+  run_as_user "'$env_py' -m pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r '$env_py' -m pip uninstall -y" || true
 
   # Pin transformers to the Setup Guide's version and keep huggingface-hub in
   # the pre-1.0 series. diffusers + hydra-core + others often bump hub past
   # 1.0 as a transitive, which breaks transformers 4.57.3's import-time check
   # ("huggingface-hub>=0.34.0,<1.0 is required").
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
+  run_as_user "'$env_py' -m pip install 'transformers==4.57.3' 'huggingface-hub>=0.34.0,<1.0'"
 
-  # Compile C++ renderers (Hunyuan3D 2.1 bundled)
+  # Compile C++ renderers (Hunyuan3D 2.1 bundled). `python setup.py install`
+  # must run with the env's python so the resulting .so links against this
+  # env's libstdc++/libtorch.
   if [ -d "$hy_dir/hy3dpaint/custom_rasterizer" ]; then
-    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-      cd '$hy_dir/hy3dpaint/custom_rasterizer' && python setup.py install"
+    run_as_user "cd '$hy_dir/hy3dpaint/custom_rasterizer' && '$env_py' setup.py install"
   fi
   if [ -d "$hy_dir/hy3dpaint/DifferentiableRenderer" ]; then
-    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-      cd '$hy_dir/hy3dpaint/DifferentiableRenderer' && python setup.py install"
+    run_as_user "cd '$hy_dir/hy3dpaint/DifferentiableRenderer' && '$env_py' setup.py install"
   fi
 
   # Hotfix: transformers check_torch_load_is_safe blocks legit .bin loads
@@ -302,6 +313,7 @@ PY
 install_comfy_trellis() {
   [ "$SKIP_TRELLIS" = "1" ] && { echo "--- [comfy_trellis] skipped ---"; return; }
   local env_name="comfy_trellis"
+  local env_py="$MINIFORGE_DIR/envs/$env_name/bin/python"
   local comfy_dir="$TOOLS_DIR/ComfyUI_Trellis"
   echo "--- [comfy_trellis] (Linux equivalent of Setup Guide Part 4) ---"
   clone_or_update https://github.com/comfyanonymous/ComfyUI.git "$comfy_dir"
@@ -320,16 +332,14 @@ install_comfy_trellis() {
   # These are ABI-incompatible. torch 2.8.0 satisfies o_voxel, and we rebuild
   # nvdiffrast from source against 2.8 (it's open-source NVLabs code) to get
   # matching SetDevice(int8, bool) symbols.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
-        --index-url https://download.pytorch.org/whl/cu128 && \
-    pip install -r '$comfy_dir/requirements.txt'"
+  run_as_user "'$env_py' -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128"
+  run_as_user "'$env_py' -m pip install -r '$comfy_dir/requirements.txt'"
 
   # torch 2.8 + cu128 pins libcusparseLt.so.0 at 0.6.3 via its metadata; the
   # later 0.7.x wheel that some sub-deps pull doesn't expose the same SONAME
   # layout and torch then fails with libcusparseLt.so.0 not found.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
+  run_as_user "'$env_py' -m pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
 
   local trellis_dir="$comfy_dir/custom_nodes/ComfyUI-Trellis2"
   clone_or_update https://github.com/visualbruno/ComfyUI-Trellis2.git "$trellis_dir"
@@ -342,8 +352,7 @@ install_comfy_trellis() {
   # actually uses; --no-deps keeps it and we handle real runtime deps below.
   # Torch270 has NO nvdiffrec_render wheel — only Torch291 ships it, and the
   # MeshOnly pipeline doesn't need it (that's a texture-projection extension).
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install --no-deps \
+  run_as_user "'$env_py' -m pip install --no-deps \
       '$trellis_dir/wheels/Linux/Torch270/cumesh-1.0-cp312-cp312-linux_x86_64.whl' \
       '$trellis_dir/wheels/Linux/Torch270/flex_gemm-0.0.1-cp312-cp312-linux_x86_64.whl' \
       '$trellis_dir/wheels/Linux/Torch270/custom_rasterizer-0.1-cp312-cp312-linux_x86_64.whl' \
@@ -354,8 +363,7 @@ install_comfy_trellis() {
   # (A10/A100 sm_86/80), Ada (RTX 4090 sm_89), Hopper (H100 sm_90). We
   # deliberately skip the shipped Torch270 nvdiffrast wheel because it's
   # linked against the torch-2.7 SetDevice(int8) single-arg signature.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    TORCH_CUDA_ARCH_LIST='8.0;8.6;8.9;9.0' pip install --no-build-isolation --no-deps \
+  run_as_user "TORCH_CUDA_ARCH_LIST='8.0;8.6;8.9;9.0' '$env_py' -m pip install --no-build-isolation --no-deps \
         git+https://github.com/NVlabs/nvdiffrast.git"
 
   # Sparse convolution backend. flex_gemm's submanifold_conv3d wheel targets
@@ -363,19 +371,17 @@ install_comfy_trellis() {
   # spconv-cu121 ships prebuilt cp312 wheels that work on all Ampere+ GPUs and
   # is ABI-compatible with torch 2.8 via the standard CUDA driver. We set
   # conv_backend='spconv' in scratch_Trellis3D.json to use this instead.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install --no-deps spconv-cu121 'cumm-cu121<0.8.0,>=0.7.11' && \
-    pip install pyyaml pybind11 fire pccm"
+  run_as_user "'$env_py' -m pip install --no-deps spconv-cu121 'cumm-cu121<0.8.0,>=0.7.11'"
+  run_as_user "'$env_py' -m pip install pyyaml pybind11 fire pccm"
 
   # Node's declared pip deps + the real runtime deps pip surfaced as missing
   # after --no-deps (plyfile, trimesh are imported by o_voxel; zstandard,
   # easydict by cumesh). transformers is imported by trellis2/modules/
   # image_feature_extractor.py for DINOv3ViTModel — required even though
   # the node's requirements.txt doesn't list it.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install -r '$trellis_dir/requirements.txt' && \
-    pip install plyfile trimesh zstandard easydict && \
-    pip install transformers accelerate safetensors"
+  run_as_user "'$env_py' -m pip install -r '$trellis_dir/requirements.txt'"
+  run_as_user "'$env_py' -m pip install plyfile trimesh zstandard easydict"
+  run_as_user "'$env_py' -m pip install transformers accelerate safetensors"
 
   # §7 Issue 3 recurrence: transformers/accelerate/open3d pull a torchaudio
   # version pin that drifts past the torch 2.8.0 we started with, breaking
@@ -383,22 +389,19 @@ install_comfy_trellis() {
   # ComfyUI's comfy/ldm/lightricks/vae/audio_vae.py imports torchaudio
   # unconditionally at startup, so this kills the service even though Trellis
   # doesn't use audio. Re-pin the full trio with matching +cu128 versions.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip install --force-reinstall --no-deps torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
-        --index-url https://download.pytorch.org/whl/cu128 && \
-    pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
+  run_as_user "'$env_py' -m pip install --force-reinstall --no-deps torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128"
+  run_as_user "'$env_py' -m pip install --no-deps 'nvidia-cusparselt-cu12==0.6.3'"
 
   # Also uninstall xformers if a transitive dep pulled it in. xformers
   # published wheels are cu130/cp310 and mismatch our cu128/cp312 — its
   # extensions crash on load. Trellis2's sparse attention has a try/except
   # fallback to torch SDPA so xformers isn't needed.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip uninstall -y xformers 2>/dev/null || true"
+  run_as_user "'$env_py' -m pip uninstall -y xformers 2>/dev/null || true"
 
   # Drop any stray nvidia-*-cu13 wheels (onnxruntime-gpu, modern transformers,
   # etc.). Same guard as the other two envs — §7 Issue 3.
-  run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-    pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r pip uninstall -y" || true
+  run_as_user "'$env_py' -m pip list 2>/dev/null | awk '/-cu13/ {print \$1}' | xargs -r '$env_py' -m pip uninstall -y" || true
 
   # DINOv3 weights. ComfyUI-Trellis2/nodes.py resolves via
   #   folder_paths.models_dir / facebook / dinov3-vitl16-pretrain-lvd1689m /
@@ -413,8 +416,7 @@ install_comfy_trellis() {
     echo "  [trellis] fetching DINOv3 weights via HF_TOKEN"
     mkdir -p "$dinov3_dir"
     chown -R "$AISTUDIO_USER:$AISTUDIO_USER" "$comfy_dir/models/facebook"
-    run_as_user "source '$MINIFORGE_DIR/etc/profile.d/conda.sh' && conda activate $env_name && \
-      HF_TOKEN='$HF_TOKEN' python -c \"
+    run_as_user "HF_TOKEN='$HF_TOKEN' '$env_py' -c \"
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id='facebook/dinov3-vitl16-pretrain-lvd1689m',
