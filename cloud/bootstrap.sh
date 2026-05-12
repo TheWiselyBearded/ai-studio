@@ -347,13 +347,20 @@ install_comfy_trellis() {
   # systemd unit below sets LD_LIBRARY_PATH so this is preferred at load time.
   run_as_user "'$MINIFORGE_DIR/bin/conda' install -y -n $env_name -c conda-forge libstdcxx-ng"
 
-  # Torch pin: the Linux Trellis2 wheels ship in two subdirs with different
-  # GPU arch targets:
-  #   wheels/Linux/Torch270/ — SASS for sm_80/86/89/90 (broad Ampere+Hopper)
-  #   wheels/Linux/Torch291/ — SASS for sm_120 ONLY (Blackwell — RTX 50xx/B200)
-  # PTX cannot JIT-downgrade across major arches, so Torch291 wheels ABORT
-  # with cudaErrorNoKernelImageForDevice on anything older than sm_120. We
-  # pick Torch270 for broad GPU compatibility (A10, A100, H100, RTX 4090).
+  # Torch pin: the Linux Trellis2 wheels live under wheels/Linux/Torch{270,291,2110}/.
+  # IMPORTANT — the wheels' SM coverage is NOT what the dir names suggest. Each
+  # wheel ships its own narrow SASS set with no PTX fallback:
+  #   cumesh-1.0  → sm_86 ONLY (every .cubin in the .so is sm_86)
+  #   o_voxel, flex_gemm, custom_rasterizer — broader but not verified for sm_80
+  # That means cumesh-backed nodes (Trellis2FillHolesWithCuMesh in particular)
+  # ABORT with cudaErrorNoKernelImageForDevice on anything other than sm_86 —
+  # A100 (sm_80), H100 (sm_90), RTX 4090 (sm_89), Blackwell (sm_120) all fail.
+  # We default the workflow (scratch_Trellis3D.json) to the Meshlib alternative
+  # for FillHoles to dodge this; cumesh is still installed because other code
+  # paths may use it on sm_86 boxes (RTX 30xx, A10).
+  # Torch291 dir is for Blackwell-only kernel variants (sm_120 SASS) and would
+  # break Ampere; Torch2110 is cp313 (wrong python ABI for our cp312 env). So
+  # Torch270 remains the right choice for our env.
   #
   # The Torch270 wheels aren't all pinned to torch 2.7.x despite the dir name:
   # o_voxel needs c10::SymBool::guard_or_false (torch 2.8+) while the shipped

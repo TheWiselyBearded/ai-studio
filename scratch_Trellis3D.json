@@ -130,13 +130,12 @@
     }
   },
   "193": {
-    "class_type": "Trellis2FillHolesWithCuMesh",
+    "class_type": "Trellis2FillHolesWithMeshlib",
     "inputs": {
       "mesh": [
         "217",
         0
-      ],
-      "max_permieters": 1
+      ]
     }
   },
   "161": {
