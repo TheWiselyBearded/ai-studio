@@ -24,6 +24,21 @@ echo "=== AI Studio bootstrap started: $(date -u) ==="
 
 : "${AI_STUDIO_TOKEN:?AI_STUDIO_TOKEN is required}"
 
+# Strip ALL whitespace from credentials. Tokens routinely pick up trailing
+# spaces / newlines when pasted into editor fields, and httpx (RFC 7230 strict)
+# refuses to send headers with whitespace — silently failing every gated HF
+# fetch with `httpx.LocalProtocolError: Illegal header value`. No credential
+# legitimately contains internal whitespace, so we just nuke it all.
+for v in AI_STUDIO_TOKEN HF_TOKEN GEMINI_API_KEY RUNWAYML_API_SECRET; do
+  if [ -n "${!v:-}" ]; then
+    cleaned="${!v//[[:space:]]/}"
+    if [ "${!v}" != "$cleaned" ]; then
+      echo "[bootstrap] stripped whitespace from $v (was ${#v} bytes, now ${#cleaned})"
+      printf -v "$v" '%s' "$cleaned"
+    fi
+  fi
+done
+
 # FS_MOUNT: where the persistent models filesystem is mounted. Lambda mounts at
 # /lambda/nfs/<fs-name> but historically the repo assumed /lambda-fs/. If the
 # user_data didn't set FS_MOUNT or set it to a path that doesn't exist, probe
