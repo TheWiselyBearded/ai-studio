@@ -40,19 +40,51 @@ namespace AIStudio.Lambda
             if (string.IsNullOrWhiteSpace(sshPrivateKeyPath) || !File.Exists(sshPrivateKeyPath))
                 return new TunnelReadResult { Success = false, Error = "SSH private key not configured." };
 
+            // Wrap the read in an `if -f … else echo SENTINEL` so the inner
+            // shell exits 0 whether or not the file is on disk. That keeps the
+            // exit-code channel reserved exclusively for ssh-level failures
+            // (auth, network, host down) — otherwise a missing file looks
+            // identical to a dropped connection.
+            const string remoteCmd =
+                "if [ -f /var/ai-studio/tunnel.url ]; then cat /var/ai-studio/tunnel.url; " +
+                "else echo __AISTUDIO_MISSING__; fi";
+
             var probe = await RunSshAsync(
-                publicIp, sshPrivateKeyPath,
-                "cat /var/ai-studio/tunnel.url 2>/dev/null",
+                publicIp, sshPrivateKeyPath, remoteCmd,
                 TimeSpan.FromSeconds(12), ct);
 
-            if (probe.ExitCode == 0)
+            if (probe.ExitCode != 0)
             {
-                var url = probe.Stdout?.Trim();
-                if (!string.IsNullOrEmpty(url) && url.StartsWith("https://"))
-                    return new TunnelReadResult { Success = true, TunnelUrl = url };
+                var sshErr = string.IsNullOrWhiteSpace(probe.Stderr)
+                    ? $"ssh exited {probe.ExitCode} with no message."
+                    : probe.Stderr.Trim();
+                return new TunnelReadResult { Success = false, Error = "SSH to instance failed: " + sshErr };
             }
-            return new TunnelReadResult { Success = false, Error = probe.Stderr?.Trim() ?? "tunnel.url not set yet." };
+
+            var stdout = probe.Stdout?.Trim() ?? string.Empty;
+
+            if (stdout.StartsWith("__AISTUDIO_MISSING__"))
+                return new TunnelReadResult
+                {
+                    Success = false,
+                    Error = "Bootstrap hasn't written /var/ai-studio/tunnel.url yet. " +
+                            "First-time bootstrap takes ~25–35 minutes; " +
+                            "tail /var/log/ai-studio-user-data.log on the instance for progress."
+                };
+
+            if (stdout.StartsWith("https://"))
+                return new TunnelReadResult { Success = true, TunnelUrl = stdout };
+
+            return new TunnelReadResult
+            {
+                Success = false,
+                Error = "tunnel.url contents look wrong (expected an https:// URL, got: " +
+                        Truncate(stdout, 200) + ")"
+            };
         }
+
+        private static string Truncate(string s, int max) =>
+            string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max) + "…";
 
         public static async Task<TunnelReadResult> WaitForTunnelAsync(
             string publicIp,

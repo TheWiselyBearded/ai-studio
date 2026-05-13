@@ -129,11 +129,21 @@
       "use_tiled_decoder": true
     }
   },
+  "193": {
+    "class_type": "Trellis2FillHolesWithCuMesh",
+    "inputs": {
+      "mesh": [
+        "217",
+        0
+      ],
+      "max_permieters": 1
+    }
+  },
   "161": {
     "class_type": "Trellis2ReconstructMeshWithQuad",
     "inputs": {
       "mesh": [
-        "217",
+        "193",
         0
       ],
       "remesh_band": 1,

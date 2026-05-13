@@ -347,6 +347,38 @@ install_comfy_trellis() {
   # systemd unit below sets LD_LIBRARY_PATH so this is preferred at load time.
   run_as_user "'$MINIFORGE_DIR/bin/conda' install -y -n $env_name -c conda-forge libstdcxx-ng"
 
+  # ===========================================================================
+  # GPU ARCH WARNING — READ ME BEFORE CHANGING INSTANCE TYPE
+  # ===========================================================================
+  # The prebuilt cumesh-1.0 and flex_gemm-0.0.1 wheels (and likely o_voxel,
+  # custom_rasterizer too) ship SASS for **sm_86 ONLY** — no PTX fallback.
+  # Verified via cuobjdump on cumesh/_C.so: every .cubin reports sm_86. Same
+  # symptom on flex_gemm's grid_sample triton kernels (which call into a
+  # sm_86-built ATen wrapper).
+  #
+  # Hardware compatibility matrix (as-shipped):
+  #   ✓ RTX 30xx, A10        — sm_86 — works
+  #   ✗ A100                 — sm_80 — fails with "no kernel image available"
+  #   ✗ H100                 — sm_90 — fails with "no kernel image available"
+  #   ✗ RTX 4090 / 50xx etc. — sm_89/120 — fails
+  #
+  # To get Trellis working on non-sm_86 hardware, we discovered a hybrid path:
+  #   1. git clone --recurse-submodules https://github.com/JeffreyXiang/CuMesh
+  #   2. GPU_ARCHS="sm_80;sm_86;sm_89;sm_90" pip install --no-build-isolation .
+  #      (this rebuilds _C.so for the target GPUs)
+  #   3. The open-source cumesh ships fewer Python helpers than visualbruno's
+  #      wheel — extract the prebuilt wheel's cumesh/remeshing.py and drop it
+  #      on top of the rebuilt install. The prebuilt remeshing.py only calls 4
+  #      C symbols (simple_dual_contour, hashmap_*, get_sparse_voxel_grid_*)
+  #      which all exist in the open-source _C.so.
+  # flex_gemm needs an analogous rebuild — JeffreyXiang has a sibling repo
+  # somewhere; if not, this path requires reverse-engineering visualbruno's
+  # private fork.
+  #
+  # Until that rebuild is wired into bootstrap.sh as standard, **launch Trellis
+  # workloads on A10 / RTX 30xx (sm_86) hardware only**.
+  # ===========================================================================
+
   # Torch pin: the Linux Trellis2 wheels live under wheels/Linux/Torch{270,291,2110}/.
   # IMPORTANT — the wheels' SM coverage is NOT what the dir names suggest. Each
   # wheel ships its own narrow SASS set with no PTX fallback:
